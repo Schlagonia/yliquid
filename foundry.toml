@@ -1,0 +1,19 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+
+evm_version = "shanghai"
+solc = "0.8.24"
+optimize = true
+optimizer_runs = 250
+
+remappings = [
+    "forge-std/=lib/forge-std/src/",
+    "@openzeppelin/=lib/yearn-vaults-v3/lib/openzeppelin-contracts/",
+    "@yearn-vaults/=lib/yearn-vaults-v3/contracts/",
+    "@tokenized-strategy/=lib/tokenized-strategy/src/",
+    "@periphery/=lib/tokenized-strategy-periphery/src/",
+]
+
+# See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options

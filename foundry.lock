@@ -1,0 +1,32 @@
+{
+  "lib/forge-std": {
+    "tag": {
+      "name": "v1.14.0",
+      "rev": "1801b0541f4fda118a10798fd3486bb7051c5dd6"
+    }
+  },
+  "lib/openzeppelin-contracts": {
+    "tag": {
+      "name": "v4.9.5",
+      "rev": "bd325d56b4c62c9c5c1aff048c37c6bb18ac0290"
+    }
+  },
+  "lib/tokenized-strategy": {
+    "tag": {
+      "name": "v3.0.4",
+      "rev": "82806289f967590c4efbf6bc3d237e4e7f0a0966"
+    }
+  },
+  "lib/tokenized-strategy-periphery": {
+    "tag": {
+      "name": "v3.0.2",
+      "rev": "d732e918b208a9b2c33c71ea0ea9e8eb880cfc6e"
+    }
+  },
+  "lib/yearn-vaults-v3": {
+    "tag": {
+      "name": "v3.0.4",
+      "rev": "104a2b233bc6d43ba40720d68355b04d2dc31795"
+    }
+  }
+}
