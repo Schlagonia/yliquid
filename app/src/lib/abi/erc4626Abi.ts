@@ -1,0 +1,77 @@
+export const erc4626Abi = [
+  {
+    type: "function",
+    name: "asset",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "address" }],
+  },
+  {
+    type: "function",
+    name: "balanceOf",
+    stateMutability: "view",
+    inputs: [{ name: "owner", type: "address" }],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "convertToAssets",
+    stateMutability: "view",
+    inputs: [{ name: "shares", type: "uint256" }],
+    outputs: [{ name: "assets", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "maxWithdraw",
+    stateMutability: "view",
+    inputs: [{ name: "owner", type: "address" }],
+    outputs: [{ name: "maxAssets", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "default_queue",
+    stateMutability: "view",
+    inputs: [{ name: "index", type: "uint256" }],
+    outputs: [{ name: "", type: "address" }],
+  },
+  {
+    type: "function",
+    name: "strategies",
+    stateMutability: "view",
+    inputs: [{ name: "strategy", type: "address" }],
+    outputs: [
+      { name: "activation", type: "uint256" },
+      { name: "last_report", type: "uint256" },
+      { name: "current_debt", type: "uint256" },
+      { name: "max_debt", type: "uint256" },
+    ],
+  },
+  {
+    type: "function",
+    name: "pricePerShare",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "deposit",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "assets", type: "uint256" },
+      { name: "receiver", type: "address" },
+    ],
+    outputs: [{ name: "shares", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "withdraw",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "assets", type: "uint256" },
+      { name: "receiver", type: "address" },
+      { name: "owner", type: "address" },
+    ],
+    outputs: [{ name: "shares", type: "uint256" }],
+  },
+] as const;

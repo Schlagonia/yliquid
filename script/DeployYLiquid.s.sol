@@ -129,11 +129,6 @@ contract DeployYLiquid is Script {
         vault.set_role(market, Roles.DEBT_MANAGER);
         vault.set_role(VAULT_ROLE_MANAGER, Roles.ALL);
 
-        if (vault.strategies(market).activation == 0) {
-            vault.add_strategy(market);
-        }
-        vault.update_max_debt_for_strategy(market, type(uint256).max);
-
         if (idleStrategy != address(0)) {
             if (vault.strategies(idleStrategy).activation == 0) {
                 vault.add_strategy(idleStrategy);
@@ -141,6 +136,12 @@ contract DeployYLiquid is Script {
             vault.update_max_debt_for_strategy(idleStrategy, type(uint256).max);
             YLiquidMarket(market).setIdleStrategy(idleStrategy);
         }
+
+        if (vault.strategies(market).activation == 0) {
+            vault.add_strategy(market);
+        }
+        vault.update_max_debt_for_strategy(market, type(uint256).max);
+        
     }
 
     function _validateConfig() internal pure {
