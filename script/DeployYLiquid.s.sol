@@ -13,13 +13,12 @@ import {WstETHUnwindAdapter} from "../src/adapters/WstETHUnwindAdapter.sol";
 import {WeETHUnwindAdapter} from "../src/adapters/WeETHUnwindAdapter.sol";
 import {AaveGenericReceiver} from "../src/receivers/AaveGenericReceiver.sol";
 import {MorphoGenericReceiver} from "../src/receivers/MorphoGenericReceiver.sol";
+import {YLiquidMarketAprOracle} from "../src/oracles/YLiquidMarketAprOracle.sol";
 
 contract DeployYLiquid is Script {
     // -------------------------------------------------------------------------
     // EDIT THESE VALUES BEFORE DEPLOYING
     // -------------------------------------------------------------------------
-
-    bool internal constant USE_FACTORY = true;
 
     // Existing vault mode (USE_FACTORY = false)
     address internal constant EXISTING_YEARN_VAULT = address(0x87F68CFbd245c8F94871A4E373a247393386513B);
@@ -33,7 +32,7 @@ contract DeployYLiquid is Script {
 
     // Market
     address internal constant MARKET_ASSET = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2; // WETH
-    address internal constant IDLE_STRATEGY = address(0xc56413869c6CDf96496f2b1eF801fEDBdFA7dDB0); // optional
+    address internal constant IDLE_STRATEGY = address(0); // optional
     string internal constant NFT_NAME = "yLiquid WETHPosition";
     string internal constant NFT_SYMBOL = "yLPWETH";
     uint256 internal constant BASE_RATE_BPS = 1_000;
@@ -63,6 +62,9 @@ contract DeployYLiquid is Script {
     // Optional Morpho generic receiver (requires WEETH_ADDRESS != 0)
     address internal constant MORPHO = 0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb;
 
+    // Optional market APR oracle (set false to skip)
+    bool internal constant DEPLOY_MARKET_APR_ORACLE = true;
+
     // -------------------------------------------------------------------------
 
     struct DeployResult {
@@ -74,6 +76,7 @@ contract DeployYLiquid is Script {
         address aaveReceiver;
         address weEthAdapter;
         address morphoReceiver;
+        address marketAprOracle;
     }
 
     function run() external returns (DeployResult memory result) {
@@ -81,7 +84,7 @@ contract DeployYLiquid is Script {
 
         vm.startBroadcast();
 
-        address yearnVault = USE_FACTORY ? _deployVault() : EXISTING_YEARN_VAULT;
+        address yearnVault = EXISTING_YEARN_VAULT != address(0) ? EXISTING_YEARN_VAULT : _deployVault();
         result = _deployAndConfigure(yearnVault);
 
         vm.stopBroadcast();
@@ -122,10 +125,6 @@ contract DeployYLiquid is Script {
             market.setAdapterAllowed(address(wstEthAdapter), true);
             market.setAdapterRiskPremium(address(wstEthAdapter), WSTETH_RISK_PREMIUM_BPS);
             result.wstEthAdapter = address(wstEthAdapter);
-
-            if (AAVE_POOL != address(0)) {
-                result.aaveReceiver = address(new AaveGenericReceiver(AAVE_POOL, address(wstEthAdapter)));
-            }
         }
 
         if (WEETH_ADDRESS != address(0)) {
@@ -137,10 +136,18 @@ contract DeployYLiquid is Script {
             market.setAdapterAllowed(address(weEthAdapter), true);
             market.setAdapterRiskPremium(address(weEthAdapter), WEETH_RISK_PREMIUM_BPS);
             result.weEthAdapter = address(weEthAdapter);
+        }
 
-            if (MORPHO != address(0)) {
-                result.morphoReceiver = address(new MorphoGenericReceiver(MORPHO, address(weEthAdapter)));
-            }
+        if (AAVE_POOL != address(0)) {
+            result.aaveReceiver = address(new AaveGenericReceiver(AAVE_POOL, address(market)));
+        }
+
+        if (MORPHO != address(0)) {
+            result.morphoReceiver = address(new MorphoGenericReceiver(MORPHO, address(market)));
+        }
+
+        if (DEPLOY_MARKET_APR_ORACLE) {
+            result.marketAprOracle = address(new YLiquidMarketAprOracle());
         }
 
         console2.log("vault:", result.vault);
@@ -151,6 +158,7 @@ contract DeployYLiquid is Script {
         console2.log("aaveReceiver:", result.aaveReceiver);
         console2.log("weEthAdapter:", result.weEthAdapter);
         console2.log("morphoReceiver:", result.morphoReceiver);
+        console2.log("marketAprOracle:", result.marketAprOracle);
     }
 
     function _configureVault(address yearnVault, address market, address idleStrategy) internal {
@@ -180,7 +188,7 @@ contract DeployYLiquid is Script {
         require(bytes(NFT_SYMBOL).length != 0, "empty nft symbol");
         require(OVERDUE_GRACE_SECONDS > 0, "zero overdue grace");
 
-        if (USE_FACTORY) {
+        if (EXISTING_YEARN_VAULT == address(0)) {
             require(VAULT_FACTORY != address(0), "zero factory");
             require(VAULT_ROLE_MANAGER != address(0), "zero role manager");
             require(bytes(VAULT_NAME).length != 0, "empty vault name");
@@ -189,12 +197,5 @@ contract DeployYLiquid is Script {
             require(EXISTING_YEARN_VAULT != address(0), "zero existing vault");
         }
 
-        if (AAVE_POOL != address(0)) {
-            require(WSTETH_ADDRESS != address(0), "aave pool requires wsteth adapter");
-        }
-
-        if (MORPHO != address(0)) {
-            require(WEETH_ADDRESS != address(0), "morpho requires weeth adapter");
-        }
     }
 }

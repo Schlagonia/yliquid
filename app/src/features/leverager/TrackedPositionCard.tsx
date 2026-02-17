@@ -1,8 +1,9 @@
-import { zeroAddress, type Address } from "viem";
+import { erc20Abi, zeroAddress, type Address } from "viem";
 import { useReadContract } from "wagmi";
 
 import { protocolConfig } from "../../config/contracts";
-import { yLiquidAdapterUiAbi } from "../../lib/abi/yLiquidAdapterUiAbi";
+import { yLiquidAdapterAbi } from "../../lib/abi/yLiquidAdapterAbi";
+import { etherFiWithdrawRequestNftAbi } from "../../lib/abi/etherFiWithdrawRequestNftAbi";
 import { lidoWithdrawalQueueAbi } from "../../lib/abi/lidoWithdrawalQueueAbi";
 import { yLiquidMarketAbi } from "../../lib/abi/yLiquidMarketAbi";
 import { yLiquidPositionNftAbi } from "../../lib/abi/yLiquidPositionNftAbi";
@@ -15,6 +16,7 @@ type TrackedPositionCardProps = {
   adapterAddress?: Address;
   positionNftAddress: Address | undefined;
   lidoQueueAddress: Address | undefined;
+  etherFiWithdrawRequestNftAddress: Address | undefined;
   walletAddress: Address | undefined;
   settlingTokenId: number | null;
   onSettle: (tokenId: number) => Promise<void>;
@@ -24,6 +26,8 @@ const marketStateLabel = (state: number): string => {
   switch (state) {
     case 1:
       return "Active";
+    case 2:
+      return "Ready";
     case 3:
       return "Closed";
     case 4:
@@ -50,6 +54,7 @@ export const TrackedPositionCard = ({
   adapterAddress,
   positionNftAddress,
   lidoQueueAddress,
+  etherFiWithdrawRequestNftAddress,
   walletAddress,
   settlingTokenId,
   onSettle,
@@ -83,12 +88,12 @@ export const TrackedPositionCard = ({
   });
 
   const marketPosition = marketPositionData as MarketPositionTuple | undefined;
-  const resolvedAdapterAddress = (marketPosition?.[2] as Address | undefined) ?? adapterAddress;
+  const resolvedAdapterAddress = (marketPosition?.[1] as Address | undefined) ?? adapterAddress;
   const safeAdapter = resolvedAdapterAddress ?? zeroAddress;
 
   const { data: adapterViewData } = useReadContract({
     address: safeAdapter,
-    abi: yLiquidAdapterUiAbi,
+    abi: yLiquidAdapterAbi,
     functionName: "positionView",
     args: [BigInt(tokenId)],
     query: { enabled: Boolean(resolvedAdapterAddress) },
@@ -96,7 +101,48 @@ export const TrackedPositionCard = ({
 
   const adapterView = adapterViewData as AdapterPositionView | undefined;
   const requestId = adapterView?.referenceId ?? 0n;
+  const safeLoanAsset = adapterView?.loanAsset ?? zeroAddress;
+  const safeCollateralAsset = adapterView?.collateralAsset ?? zeroAddress;
   const safeQueue = lidoQueueAddress ?? zeroAddress;
+  const safeEtherFiWithdrawRequestNft = etherFiWithdrawRequestNftAddress ?? zeroAddress;
+  const isWstEthCollateral = Boolean(
+    protocolConfig.tokens.wstEth &&
+      adapterView?.collateralAsset &&
+      adapterView.collateralAsset.toLowerCase() === protocolConfig.tokens.wstEth.toLowerCase(),
+  );
+  const isWeEthCollateral = Boolean(
+    protocolConfig.tokens.weEth &&
+      adapterView?.collateralAsset &&
+      adapterView.collateralAsset.toLowerCase() === protocolConfig.tokens.weEth.toLowerCase(),
+  );
+
+  const { data: loanSymbolData } = useReadContract({
+    address: safeLoanAsset,
+    abi: erc20Abi,
+    functionName: "symbol",
+    query: { enabled: Boolean(adapterView?.loanAsset) },
+  });
+
+  const { data: loanDecimalsData } = useReadContract({
+    address: safeLoanAsset,
+    abi: erc20Abi,
+    functionName: "decimals",
+    query: { enabled: Boolean(adapterView?.loanAsset) },
+  });
+
+  const { data: collateralSymbolData } = useReadContract({
+    address: safeCollateralAsset,
+    abi: erc20Abi,
+    functionName: "symbol",
+    query: { enabled: Boolean(adapterView?.collateralAsset) },
+  });
+
+  const { data: collateralDecimalsData } = useReadContract({
+    address: safeCollateralAsset,
+    abi: erc20Abi,
+    functionName: "decimals",
+    query: { enabled: Boolean(adapterView?.collateralAsset) },
+  });
 
   const { data: queueStatusesData } = useReadContract({
     address: safeQueue,
@@ -104,12 +150,28 @@ export const TrackedPositionCard = ({
     functionName: "getWithdrawalStatus",
     args: [[requestId]],
     query: {
-      enabled: Boolean(lidoQueueAddress && requestId > 0n),
+      enabled: Boolean(isWstEthCollateral && lidoQueueAddress && requestId > 0n),
+    },
+  });
+
+  const { data: etherFiIsFinalizedData } = useReadContract({
+    address: safeEtherFiWithdrawRequestNft,
+    abi: etherFiWithdrawRequestNftAbi,
+    functionName: "isFinalized",
+    args: [requestId],
+    query: {
+      enabled: Boolean(
+        isWeEthCollateral && etherFiWithdrawRequestNftAddress && requestId > 0n,
+      ),
     },
   });
 
   const debt = (quoteDebtData as bigint | undefined) ?? 0n;
   const owner = (nftOwnerData as Address | undefined) ?? adapterView?.owner;
+  const loanSymbol = (loanSymbolData as string | undefined) ?? "Loan";
+  const collateralSymbol = (collateralSymbolData as string | undefined) ?? "Collateral";
+  const loanDecimals = Number(loanDecimalsData ?? 18);
+  const collateralDecimals = Number(collateralDecimalsData ?? 18);
 
   const queueStatuses = queueStatusesData as
     | {
@@ -127,8 +189,11 @@ export const TrackedPositionCard = ({
   const queueIsClaimed = queueStatus?.isClaimed;
   const queueReady =
     queueIsFinalized === undefined ? undefined : queueIsFinalized && !queueIsClaimed;
-  const queueStatusLabel =
-    requestId === 0n
+  const etherFiIsFinalized = etherFiIsFinalizedData as boolean | undefined;
+  const etherFiReady =
+    requestId === 0n ? undefined : etherFiIsFinalized === undefined ? undefined : etherFiIsFinalized;
+  const queueStatusLabel = isWstEthCollateral
+    ? requestId === 0n
       ? "-"
       : queueReady
         ? "Claimable"
@@ -136,20 +201,32 @@ export const TrackedPositionCard = ({
           ? "Claimed"
           : queueIsFinalized === false
             ? "Pending Finalization"
-            : "Unknown";
+            : "Unknown"
+    : isWeEthCollateral
+      ? requestId === 0n
+        ? "-"
+        : etherFiIsFinalized === undefined
+          ? "Checking On-Chain"
+          : etherFiIsFinalized
+            ? "Claimable"
+            : "Pending Finalization"
+      : "-";
 
-  const marketState = Number(marketPosition?.[7] ?? 0n);
+  const marketState = Number(marketPosition?.[6] ?? 0n);
   const adapterStatus = Number(adapterView?.status ?? 0n);
-  const unlockTime = adapterView?.expectedUnlockTime ?? marketPosition?.[6] ?? 0n;
+  const unlockTime = adapterView?.expectedUnlockTime ?? marketPosition?.[5] ?? 0n;
 
   const isOpen = marketState === 1 && adapterStatus === 1;
+  const blockedByQueue =
+    (isWstEthCollateral && queueReady === false) ||
+    (isWeEthCollateral && requestId > 0n && etherFiReady !== true);
 
   const canSettle = Boolean(
     owner &&
       walletAddress &&
       owner.toLowerCase() === walletAddress.toLowerCase() &&
       isOpen &&
-      queueReady !== false,
+      !blockedByQueue,
   );
   const ownerHref = owner ? `${explorerBaseUrl}/address/${owner}` : undefined;
   const proxyHref = adapterView?.proxy
@@ -192,32 +269,46 @@ export const TrackedPositionCard = ({
         </div>
         <div>
           <dt>Principal</dt>
-          <dd>{formatAmount(adapterView?.principal, 18, 6)} WETH</dd>
+          <dd>{formatAmount(adapterView?.principal, loanDecimals, 6)} {loanSymbol}</dd>
         </div>
         <div>
           <dt>Collateral</dt>
-          <dd>{formatAmount(adapterView?.collateralAmount, 18, 6)} wstETH</dd>
+          <dd>{formatAmount(adapterView?.collateralAmount, collateralDecimals, 6)} {collateralSymbol}</dd>
         </div>
         <div>
           <dt>Debt Quote</dt>
-          <dd>{formatAmount(debt, 18, 6)} WETH</dd>
+          <dd>{formatAmount(debt, loanDecimals, 6)} {loanSymbol}</dd>
         </div>
         <div>
-          <dt>Ready After</dt>
+          <dt>Exected Finalization</dt>
           <dd>{formatTimestamp(unlockTime)}</dd>
         </div>
         <div>
-          <dt>Lido Request ID</dt>
+          <dt>
+            {isWstEthCollateral
+              ? "Lido Request ID"
+              : isWeEthCollateral
+                ? "EtherFi Request ID"
+                : "Request ID"}
+          </dt>
           <dd>{adapterView?.referenceId?.toString() ?? "-"}</dd>
         </div>
         <div>
-          <dt>Lido Queue Status</dt>
+          <dt>
+            {isWstEthCollateral
+              ? "Lido Queue Status"
+              : isWeEthCollateral
+                ? "EtherFi Queue Status"
+                : "Withdrawal Status"}
+          </dt>
           <dd>{queueStatusLabel}</dd>
         </div>
-        <div>
-          <dt>Queue Timestamp</dt>
-          <dd>{formatTimestamp(queueStatus?.timestamp)}</dd>
-        </div>
+        {isWstEthCollateral && (
+          <div>
+            <dt>Queue Timestamp</dt>
+            <dd>{formatTimestamp(queueStatus?.timestamp)}</dd>
+          </div>
+        )}
       </dl>
 
       <button
@@ -228,8 +319,15 @@ export const TrackedPositionCard = ({
       >
         {settlingTokenId === tokenId ? "Settling..." : "Settle and Claim"}
       </button>
-      {requestId > 0n && queueReady === false && (
+      {isWstEthCollateral && requestId > 0n && queueReady === false && (
         <p className="warning-text">Lido request is still waiting for finalization.</p>
+      )}
+      {isWeEthCollateral && requestId > 0n && etherFiReady !== true && (
+        <p className="warning-text">
+          {etherFiReady === undefined
+            ? "EtherFi request status is still loading."
+            : "EtherFi request is still waiting for finalization."}
+        </p>
       )}
     </article>
   );

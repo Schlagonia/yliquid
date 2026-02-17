@@ -131,8 +131,8 @@ export const DepositorPanel = () => {
     address: safeYearnAprOracle,
     abi: yearnAprOracleAbi,
     functionName: "getStrategyApr",
-    args: [safeDefaultStrategy, 0n],
-    query: { enabled: Boolean(yearnAprOracleAddress && defaultStrategy) },
+    args: [safeVault, 0n],
+    query: { enabled: Boolean(yearnAprOracleAddress && vaultAddress) },
   });
 
   const { data: vaultStrategyParamsData } = useReadContract({
@@ -195,25 +195,7 @@ export const DepositorPanel = () => {
   const baseRateAprWad =
     baseRateBps === undefined ? undefined : baseRateBps * BPS_TO_WAD;
 
-  const estimatedAprWad = useMemo(() => {
-    if (baseStrategyAprWad === undefined || baseRateAprWad === undefined) {
-      return undefined;
-    }
-
-    const weightedCapital = liquidStrategyAllocation + totalPrincipalActive;
-    if (weightedCapital === 0n) return undefined;
-
-    return (
-      (baseStrategyAprWad * liquidStrategyAllocation +
-        baseRateAprWad * totalPrincipalActive) /
-      weightedCapital
-    );
-  }, [
-    baseStrategyAprWad,
-    baseRateAprWad,
-    liquidStrategyAllocation,
-    totalPrincipalActive,
-  ]);
+  const estimatedAprWad = baseStrategyAprWad;
 
   const estimatedAprLabel = formatAprPercent(estimatedAprWad);
   const baseAprLabel = formatAprPercent(baseStrategyAprWad);

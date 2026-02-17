@@ -5,8 +5,11 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {IAavePool} from "../interfaces/IAavePool.sol";
 import {IYLiquidAdapterCallbackReceiver} from "../interfaces/IYLiquidAdapterCallbackReceiver.sol";
-import {IYLiquidManagedAdapter} from "../interfaces/IYLiquidManagedAdapter.sol";
 import {ITokenizedStrategy} from "@tokenized-strategy/interfaces/ITokenizedStrategy.sol";
+
+interface IYLiquidMarketAdapterRegistry {
+    function allowedAdapters(address adapter) external view returns (bool);
+}
 
 contract AaveGenericReceiver is IYLiquidAdapterCallbackReceiver {
     using SafeERC20 for IERC20;
@@ -21,14 +24,14 @@ contract AaveGenericReceiver is IYLiquidAdapterCallbackReceiver {
     }
 
     IAavePool public immutable POOL;
-    address public immutable ADAPTER;
+    address public immutable MARKET;
 
-    constructor(address pool_, address adapter_) {
+    constructor(address pool_, address market_) {
         require(pool_ != address(0), "zero pool");
-        require(adapter_ != address(0), "zero adapter");
+        require(market_ != address(0), "zero market");
 
         POOL = IAavePool(pool_);
-        ADAPTER = adapter_;
+        MARKET = market_;
     }
 
     function onYLiquidAdapterCallback(
@@ -42,7 +45,7 @@ contract AaveGenericReceiver is IYLiquidAdapterCallbackReceiver {
         external
         override
     {
-        require(msg.sender == ADAPTER, "not adapter");
+        require(IYLiquidMarketAdapterRegistry(MARKET).allowedAdapters(msg.sender), "adapter not approved");
         require(phase == PHASE_OPEN, "unsupported phase");
         require(owner != address(0), "zero owner");
         require(amount > 0, "zero amount");
@@ -61,12 +64,11 @@ contract AaveGenericReceiver is IYLiquidAdapterCallbackReceiver {
         uint256 withdrawn = POOL.withdraw(openData.collateralAsset, collateralAmount, address(this));
         require(withdrawn > 0, "zero withdrawn");
 
-        IERC20(openData.collateralAsset).forceApprove(ADAPTER, withdrawn);
+        IERC20(openData.collateralAsset).forceApprove(msg.sender, withdrawn);
     }
 
     function rescue(address token) external {
-        address market = IYLiquidManagedAdapter(ADAPTER).MARKET();
-        address management = ITokenizedStrategy(market).management();
+        address management = ITokenizedStrategy(MARKET).management();
         require(msg.sender == management, "not management");
 
         IERC20(token).safeTransfer(management, IERC20(token).balanceOf(address(this)));

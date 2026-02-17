@@ -74,7 +74,7 @@ contract AaveGenericReceiverWstETHForkTest is Test {
         market = new YLiquidMarket(WETH, vaultAddr, address(rateModel), "yLiquid Position", "yLPOS");
         idleStrategy = new IdleHoldStrategy(WETH, "yLiquid Idle Strategy");
         adapter = new WstETHUnwindAdapter(address(market), 1.01e18);
-        receiver = new AaveGenericReceiver(AAVE_POOL, address(adapter));
+        receiver = new AaveGenericReceiver(AAVE_POOL, address(market));
         aWstETH = _resolveAaveAToken(WSTETH);
         require(aWstETH != address(0), "zero awsteth");
         _labelAddresses();
