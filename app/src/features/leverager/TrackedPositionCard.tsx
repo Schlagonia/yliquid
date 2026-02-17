@@ -141,17 +141,14 @@ export const TrackedPositionCard = ({
   const marketState = Number(marketPosition?.[7] ?? 0n);
   const adapterStatus = Number(adapterView?.status ?? 0n);
   const unlockTime = adapterView?.expectedUnlockTime ?? marketPosition?.[6] ?? 0n;
-  const unlockSeconds = Number(unlockTime);
 
   const isOpen = marketState === 1 && adapterStatus === 1;
-  const isReady = unlockSeconds > 0 && Math.floor(Date.now() / 1000) >= unlockSeconds;
 
   const canSettle = Boolean(
     owner &&
       walletAddress &&
       owner.toLowerCase() === walletAddress.toLowerCase() &&
       isOpen &&
-      isReady &&
       queueReady !== false,
   );
   const ownerHref = owner ? `${explorerBaseUrl}/address/${owner}` : undefined;

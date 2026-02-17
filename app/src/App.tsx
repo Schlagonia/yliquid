@@ -19,7 +19,7 @@ const laneLabels: Record<Lane, string> = {
 };
 
 const App = () => {
-  const [lane, setLane] = useState<Lane>("leverager");
+  const [lane, setLane] = useState<Lane>("depositor");
   const explorerBaseUrl =
     protocolConfig.chainId === 11155111
       ? "https://sepolia.etherscan.io"

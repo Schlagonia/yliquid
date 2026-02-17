@@ -25,6 +25,7 @@ import {
 } from "../../lib/abi/aaveAbi";
 import { yLiquidMarketAbi } from "../../lib/abi/yLiquidMarketAbi";
 import { yLiquidPositionNftAbi } from "../../lib/abi/yLiquidPositionNftAbi";
+import { yLiquidRateModelAbi } from "../../lib/abi/yLiquidRateModelAbi";
 import { formatAmount, parseAmountInput, shortAddress } from "../../lib/format";
 import { TrackedPositionCard } from "./TrackedPositionCard";
 
@@ -38,6 +39,24 @@ const POSITION_TRANSFER_EVENT = parseAbiItem(
 );
 
 type ReserveTokensTuple = readonly [Address, Address, Address];
+
+type BpsValue = bigint | number | undefined | null;
+
+const normalizeBps = (value: BpsValue): bigint | undefined => {
+  if (typeof value === "bigint") return value;
+  if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+    return BigInt(Math.trunc(value));
+  }
+  return undefined;
+};
+
+const formatBpsAsPercent = (bps: BpsValue): string => {
+  const normalized = normalizeBps(bps);
+  if (normalized === undefined) return "N/A";
+  const whole = normalized / 100n;
+  const fraction = (normalized % 100n).toString().padStart(2, "0");
+  return `${whole.toString()}.${fraction}% APR`;
+};
 
 export const LeveragerPanel = () => {
   const marketAddress = protocolConfig.contracts.yLiquidMarket;
@@ -56,6 +75,8 @@ export const LeveragerPanel = () => {
   const [selectedAdapterId, setSelectedAdapterId] = useState(adapterOptions[0]?.id ?? "");
   const selectedAdapter =
     adapterOptions.find((adapter) => adapter.id === selectedAdapterId) ?? adapterOptions[0];
+  const selectedAdapterAddress = selectedAdapter?.adapter;
+  const safeSelectedAdapter = selectedAdapterAddress ?? zeroAddress;
 
   const [principalInput, setPrincipalInput] = useState("");
   const [collateralInput, setCollateralInput] = useState("");
@@ -93,6 +114,31 @@ export const LeveragerPanel = () => {
     abi: yLiquidMarketAbi,
     functionName: "positionNFT",
     query: { enabled: Boolean(marketAddress) },
+  });
+
+  const { data: rateModelData } = useReadContract({
+    address: safeMarket,
+    abi: yLiquidMarketAbi,
+    functionName: "rateModel",
+    query: { enabled: Boolean(marketAddress) },
+  });
+
+  const rateModelAddress = rateModelData as Address | undefined;
+  const safeRateModel = rateModelAddress ?? zeroAddress;
+
+  const { data: baseRateBpsData } = useReadContract({
+    address: safeRateModel,
+    abi: yLiquidRateModelAbi,
+    functionName: "baseRateBps",
+    query: { enabled: Boolean(rateModelAddress) },
+  });
+
+  const { data: adapterRiskPremiumBpsData } = useReadContract({
+    address: safeMarket,
+    abi: yLiquidMarketAbi,
+    functionName: "adapterRiskPremiumBps",
+    args: [safeSelectedAdapter],
+    query: { enabled: Boolean(marketAddress && selectedAdapterAddress) },
   });
 
   const { data: wethDecimalsData } = useReadContract({
@@ -213,6 +259,13 @@ export const LeveragerPanel = () => {
   const wethDebtBalance = (wethDebtBalanceData as bigint | undefined) ?? 0n;
   const collateralAllowance = (collateralAllowanceData as bigint | undefined) ?? 0n;
   const openPositionCount = Number(openPositionCountData ?? 0n);
+  const baseRateBps = normalizeBps(baseRateBpsData as BpsValue);
+  const adapterRiskPremiumBps = normalizeBps(adapterRiskPremiumBpsData as BpsValue);
+  const currentBorrowRateBps =
+    baseRateBps === undefined ? undefined : baseRateBps + (adapterRiskPremiumBps ?? 0n);
+  const currentBorrowRateLabel = formatBpsAsPercent(currentBorrowRateBps);
+  const baseRateLabel = formatBpsAsPercent(baseRateBps);
+  const routeRiskPremiumLabel = formatBpsAsPercent(adapterRiskPremiumBps ?? 0n);
 
   const wethDecimals = Number(wethDecimalsData ?? 18);
   const collateralDecimals = Number(collateralDecimalsData ?? 18);
@@ -641,6 +694,10 @@ export const LeveragerPanel = () => {
           <span className="metric-label">Principal Used (Capped)</span>
           <strong>{formatAmount(effectivePrincipalAmount, wethDecimals, 6)} WETH</strong>
         </article>
+        <article className="metric-card">
+          <span className="metric-label">Current Borrow Rate</span>
+          <strong>{currentBorrowRateLabel}</strong>
+        </article>
       </div>
       {isConnected && openPositionCount > 0 && (
         <p className="warning-text">
@@ -683,6 +740,10 @@ export const LeveragerPanel = () => {
 
         <p className="hint">
           Route: <strong>{selectedAdapter.label}</strong> | Receiver: <strong>{shortAddress(selectedAdapter.receiver)}</strong>
+        </p>
+        <p className="hint">
+          Borrow APR for this route: <strong>{currentBorrowRateLabel}</strong> (base{" "}
+          {baseRateLabel} + route premium {routeRiskPremiumLabel})
         </p>
 
         <div className="form-grid">

@@ -65,6 +65,13 @@ export const yLiquidMarketAbi = [
   },
   {
     type: "function",
+    name: "adapterRiskPremiumBps",
+    stateMutability: "view",
+    inputs: [{ name: "adapter", type: "address" }],
+    outputs: [{ name: "", type: "uint32" }],
+  },
+  {
+    type: "function",
     name: "positionNFT",
     stateMutability: "view",
     inputs: [],
