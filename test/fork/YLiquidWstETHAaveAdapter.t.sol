@@ -43,50 +43,57 @@ contract WstETHAaveReceiver is IYLiquidAdapterCallbackReceiver {
         uint256 withdrawAmount;
     }
 
-    IAavePool public immutable pool;
-    address public immutable adapter;
-    address public immutable weth;
-    address public immutable wstEth;
+    IAavePool public immutable POOL;
+    address public immutable ADAPTER;
+    address public immutable WETH;
+    address public immutable WSTETH;
 
     bool public sawOpenCallback;
 
     constructor(address pool_, address adapter_, address weth_, address wstEth_) {
-        pool = IAavePool(pool_);
-        adapter = adapter_;
-        weth = weth_;
-        wstEth = wstEth_;
+        POOL = IAavePool(pool_);
+        ADAPTER = adapter_;
+        WETH = weth_;
+        WSTETH = wstEth_;
     }
 
     function bootstrapAavePosition(uint256 collateralWstEth, uint256 borrowWeth, address sink) external {
-        _forceApprove(wstEth, address(pool), collateralWstEth);
-        pool.supply(wstEth, collateralWstEth, address(this), 0);
+        _forceApprove(WSTETH, address(POOL), collateralWstEth);
+        POOL.supply(WSTETH, collateralWstEth, address(this), 0);
         if (borrowWeth > 0) {
-            pool.borrow(weth, borrowWeth, VARIABLE_RATE_MODE, 0, address(this));
+            POOL.borrow(WETH, borrowWeth, VARIABLE_RATE_MODE, 0, address(this));
         }
 
         if (sink != address(0)) {
-            IERC20(weth).transfer(sink, IERC20(weth).balanceOf(address(this)));
+            IERC20(WETH).transfer(sink, IERC20(WETH).balanceOf(address(this)));
         }
     }
 
-    function onYLiquidAdapterCallback(uint8 phase, address, address token, uint256 amount, bytes calldata data)
+    function onYLiquidAdapterCallback(
+        uint8 phase,
+        address,
+        address token,
+        uint256 amount,
+        uint256 collateralAmount,
+        bytes calldata data
+    )
         external
         override
     {
-        require(msg.sender == adapter, "not adapter");
+        require(msg.sender == ADAPTER, "not adapter");
         require(phase == PHASE_OPEN_WETH, "unsupported phase");
-        require(token == weth, "bad token");
+        require(token == WETH, "bad token");
         require(amount > 0, "bad amount");
 
         sawOpenCallback = true;
         OpenCallbackData memory openData = abi.decode(data, (OpenCallbackData));
 
         if (openData.repayAmount > 0) {
-            _forceApprove(weth, address(pool), openData.repayAmount);
-            pool.repay(weth, openData.repayAmount, VARIABLE_RATE_MODE, address(this));
+            _forceApprove(WETH, address(POOL), openData.repayAmount);
+            POOL.repay(WETH, openData.repayAmount, VARIABLE_RATE_MODE, address(this));
         }
-        pool.withdraw(wstEth, openData.withdrawAmount, address(this));
-        _forceApprove(wstEth, adapter, openData.withdrawAmount);
+        POOL.withdraw(WSTETH, collateralAmount, address(this));
+        _forceApprove(WSTETH, ADAPTER, collateralAmount);
     }
 
     function _forceApprove(address token, address spender, uint256 amount) internal {
@@ -120,6 +127,7 @@ contract YLiquidWstETHAaveAdapterForkTest is Test {
     function setUp() external {
         string memory rpc = vm.envString("ETH_RPC_URL");
         vm.createSelectFork(rpc);
+        vm.makePersistent(address(this));
 
         address vaultAddr =
             IVaultFactory(FACTORY).deploy_new_vault(WETH, "yLiquid wstETH Aave Fork Vault", "ylWSTETH", address(this), 7 days);
@@ -128,7 +136,7 @@ contract YLiquidWstETHAaveAdapterForkTest is Test {
         rateModel = new YLiquidRateModel(0, 1, 0);
         market = new YLiquidMarket(WETH, vaultAddr, address(rateModel), "yLiquid Position", "yLPOS");
         idleStrategy = new IdleHoldStrategy(WETH, "yLiquid Idle Strategy");
-        adapter = new WstETHUnwindAdapter(address(market), WETH, WSTETH, 1e18);
+        adapter = new WstETHUnwindAdapter(address(market), 1.01e18);
         receiver = new WstETHAaveReceiver(AAVE_POOL, address(adapter), WETH, WSTETH);
         _labelAddresses();
 
@@ -139,16 +147,15 @@ contract YLiquidWstETHAaveAdapterForkTest is Test {
 
     function testFork_OpenUnwindAndSettleFromWstETHToWETH() external {
         bytes memory openData = abi.encode(
-                    WstETHAaveReceiver.OpenCallbackData({repayAmount: 0, withdrawAmount: LOCKED_WSTETH})
+            WstETHAaveReceiver.OpenCallbackData({repayAmount: 0, withdrawAmount: LOCKED_WSTETH})
         );
 
         uint256 tokenId = market.openPosition(PRINCIPAL_WETH, address(adapter), address(receiver), LOCKED_WSTETH, openData);
 
         assertTrue(receiver.sawOpenCallback(), "open callback missing");
-        (AdapterProxy proxy, address positionReceiver, uint128 principal, uint128 locked, uint256 requestId, WstETHUnwindAdapter.Status status) =
+        (AdapterProxy proxy, uint128 principal, uint128 locked, uint256 requestId, WstETHUnwindAdapter.Status status) =
             adapter.positions(tokenId);
         vm.label(address(proxy), "WstETHUnwindProxy");
-        assertEq(positionReceiver, address(receiver), "receiver mismatch");
         assertEq(principal, PRINCIPAL_WETH, "principal mismatch");
         assertEq(locked, LOCKED_WSTETH, "locked mismatch");
         assertGt(requestId, 0, "request id");
@@ -166,7 +173,7 @@ contract YLiquidWstETHAaveAdapterForkTest is Test {
         bytes memory settleData = abi.encode(bytes(""));
         market.settleAndRepay(tokenId, address(receiver), settleData);
 
-        (proxy,,, requestId,, status) = adapter.positions(tokenId);
+        (proxy,,, requestId, status) = adapter.positions(tokenId);
         assertEq(uint8(status), uint8(WstETHUnwindAdapter.Status.Closed), "position not closed");
         assertEq(market.totalPrincipalActive(), 0, "market principal not cleared");
         assertEq(IERC20(WETH).balanceOf(address(proxy)), 0, "proxy weth balance mismatch");
@@ -184,7 +191,7 @@ contract YLiquidWstETHAaveAdapterForkTest is Test {
         );
 
         uint256 tokenId = market.openPosition(PRINCIPAL_WETH, address(adapter), address(receiver), LOCKED_WSTETH, openData);
-        (AdapterProxy proxy,,,, uint256 requestId,) = adapter.positions(tokenId);
+        (AdapterProxy proxy,,, uint256 requestId,) = adapter.positions(tokenId);
         vm.warp(block.timestamp + 11 days);
         uint256 claimedEth = IwstETH(WSTETH).getStETHByWstETH(LOCKED_WSTETH);   
         vm.deal(address(proxy), claimedEth);
@@ -201,6 +208,41 @@ contract YLiquidWstETHAaveAdapterForkTest is Test {
 
         uint256 governanceAfter = IERC20(WETH).balanceOf(address(this));
         assertGt(governanceAfter, governanceBefore, "governance bounty missing");
+    }
+
+    function testFork_ForceCloseCanRealizeLoss() external {
+        bytes memory openData = abi.encode(
+            WstETHAaveReceiver.OpenCallbackData({repayAmount: 0, withdrawAmount: LOCKED_WSTETH})
+        );
+
+        uint256 tokenId = market.openPosition(PRINCIPAL_WETH, address(adapter), address(receiver), LOCKED_WSTETH, openData);
+        (AdapterProxy proxy,,, uint256 requestId,) = adapter.positions(tokenId);
+        vm.warp(block.timestamp + 11 days);
+
+        uint256 owed = market.quoteDebt(tokenId);
+        uint256 claimedEth = 0.25 ether;
+        require(claimedEth < owed, "loss setup invalid");
+        vm.deal(address(proxy), claimedEth);
+        vm.mockCall(
+            WITHDRAWAL_QUEUE,
+            abi.encodeCall(IQueue.claimWithdrawal, (requestId)),
+            abi.encode()
+        );
+
+        uint256 governanceBefore = IERC20(WETH).balanceOf(address(this));
+        market.forceClose(tokenId, address(receiver), bytes(""));
+        uint256 governanceAfter = IERC20(WETH).balanceOf(address(this));
+
+        assertEq(governanceAfter, governanceBefore, "unexpected bounty on loss");
+
+        (,,,,,, YLiquidMarket.PositionState state) = market.positions(tokenId);
+        assertEq(uint8(state), uint8(YLiquidMarket.PositionState.Defaulted), "position not defaulted");
+
+        IVault.StrategyParams memory marketParams = vault.strategies(address(market));
+        IVault.StrategyParams memory idleParams = vault.strategies(address(idleStrategy));
+        assertGt(marketParams.current_debt, 0, "market debt should retain loss");
+        assertLt(marketParams.current_debt, PRINCIPAL_WETH, "recovery not applied");
+        assertLt(idleParams.current_debt, IDLE_SEED_WETH, "loss not realized");
     }
 
     function testFork_SettleRevertsOnImpossibleMinOut() external {

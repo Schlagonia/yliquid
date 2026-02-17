@@ -35,59 +35,65 @@ contract SUSDeAaveReceiver is IYLiquidAdapterCallbackReceiver {
     uint8 internal constant PHASE_OPEN_USDC = 1;
     uint8 internal constant PHASE_SETTLE_USDE = 2;
 
-    IAavePool public immutable pool;
-    address public immutable adapter;
-    address public immutable usdc;
-    address public immutable usde;
-    address public immutable sUSDe;
+    IAavePool public immutable POOL;
+    address public immutable ADAPTER;
+    address public immutable USDC;
+    address public immutable USDE;
+    address public immutable SUSDE;
 
     bool public sawOpenCallback;
     bool public sawSettleCallback;
 
     constructor(address pool_, address adapter_, address usdc_, address usde_, address sUSDe_) {
-        pool = IAavePool(pool_);
-        adapter = adapter_;
-        usdc = usdc_;
-        usde = usde_;
-        sUSDe = sUSDe_;
+        POOL = IAavePool(pool_);
+        ADAPTER = adapter_;
+        USDC = usdc_;
+        USDE = usde_;
+        SUSDE = sUSDe_;
     }
 
     function bootstrapAavePosition(uint256 collateralSUSDe, uint256 borrowUsdc, address sink) external {
-        _forceApprove(sUSDe, address(pool), collateralSUSDe);
-        pool.supply(sUSDe, collateralSUSDe, address(this), 0);
+        _forceApprove(SUSDE, address(POOL), collateralSUSDe);
+        POOL.supply(SUSDE, collateralSUSDe, address(this), 0);
         if (borrowUsdc > 0) {
-            pool.borrow(usdc, borrowUsdc, 2, 0, address(this));
+            POOL.borrow(USDC, borrowUsdc, 2, 0, address(this));
         }
 
         if (sink != address(0)) {
-            IERC20(usdc).transfer(sink, IERC20(usdc).balanceOf(address(this)));
+            IERC20(USDC).transfer(sink, IERC20(USDC).balanceOf(address(this)));
         }
     }
 
-    function onYLiquidAdapterCallback(uint8 phase, address, address token, uint256 amount, bytes calldata data)
+    function onYLiquidAdapterCallback(
+        uint8 phase,
+        address,
+        address token,
+        uint256 amount,
+        uint256 collateralAmount,
+        bytes calldata data
+    )
         external
         override
     {
-        require(msg.sender == adapter, "not adapter");
+        require(msg.sender == ADAPTER, "not adapter");
 
         if (phase == PHASE_OPEN_USDC) {
             sawOpenCallback = true;
-            require(token == usdc, "bad token");
+            require(token == USDC, "bad token");
             require(amount > 0, "bad amount");
 
-            uint256 lockSUSDe = abi.decode(data, (uint256));
-            _forceApprove(sUSDe, adapter, lockSUSDe);
+            _forceApprove(SUSDE, ADAPTER, collateralAmount);
             return;
         }
 
         if (phase == PHASE_SETTLE_USDE) {
             sawSettleCallback = true;
-            require(token == usde, "bad token");
+            require(token == USDE, "bad token");
             require(amount > 0, "bad amount");
 
             uint256 repayUsdc = abi.decode(data, (uint256));
-            require(IERC20(usdc).balanceOf(address(this)) >= repayUsdc, "insufficient usdc");
-            _forceApprove(usdc, adapter, repayUsdc);
+            require(IERC20(USDC).balanceOf(address(this)) >= repayUsdc, "insufficient usdc");
+            _forceApprove(USDC, ADAPTER, repayUsdc);
             return;
         }
 
@@ -122,6 +128,7 @@ contract YLiquidSUSDeAdapterForkTest is Test {
     function setUp() external {
         string memory rpc = vm.envString("ETH_RPC_URL");
         vm.createSelectFork(rpc);
+        vm.makePersistent(address(this));
 
         address vaultAddr =
             IVaultFactory(FACTORY).deploy_new_vault(USDC, "yLiquid sUSDe Aave Fork Vault", "ylSUSDE", address(this), 7 days);
@@ -130,7 +137,7 @@ contract YLiquidSUSDeAdapterForkTest is Test {
         rateModel = new YLiquidRateModel(0, 1, 0);
         market = new YLiquidMarket(USDC, vaultAddr, address(rateModel), "yLiquid Position", "yLPOS");
         idleStrategy = new IdleHoldStrategy(USDC, "yLiquid Idle Strategy");
-        adapter = new SUSDeAdapter(address(market), USDC, SUSDE, 1.1e18);
+        adapter = new SUSDeAdapter(address(market), 1.1e18);
         receiver = new SUSDeAaveReceiver(AAVE_POOL, address(adapter), USDC, USDE, SUSDE);
         _labelAddresses();
 
@@ -147,7 +154,7 @@ contract YLiquidSUSDeAdapterForkTest is Test {
         );
 
         assertTrue(receiver.sawOpenCallback(), "open callback missing");
-        (,,,,, uint64 cooldownEnd, SUSDeAdapter.Status status) = adapter.positions(tokenId);
+        (,,,, uint64 cooldownEnd, SUSDeAdapter.Status status) = adapter.positions(tokenId);
         assertEq(uint8(status), uint8(SUSDeAdapter.Status.Open), "position not open");
         vm.warp(uint256(cooldownEnd) + 1);
 
@@ -156,7 +163,7 @@ contract YLiquidSUSDeAdapterForkTest is Test {
         market.settleAndRepay(tokenId, address(receiver), settleCallbackData);
 
         assertTrue(receiver.sawSettleCallback(), "settle callback missing");
-        (,,,,,, status) = adapter.positions(tokenId);
+        (,,,,, status) = adapter.positions(tokenId);
         assertEq(uint8(status), uint8(SUSDeAdapter.Status.Closed), "adapter position still open");
         assertEq(market.totalPrincipalActive(), 0, "market principal not cleared");
 
