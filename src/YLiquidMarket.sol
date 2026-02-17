@@ -3,16 +3,37 @@ pragma solidity ^0.8.24;
 
 import {BaseHealthCheck, ERC20} from "@periphery/Bases/HealthCheck/BaseHealthCheck.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import {ITokenizedStrategy} from "@tokenized-strategy/interfaces/ITokenizedStrategy.sol";
 
 import {IVault} from "@yearn-vaults/interfaces/IVault.sol";
 import {IYLiquidAdapter} from "./interfaces/IYLiquidAdapter.sol";
 import {IYLiquidRateModel} from "./interfaces/IYLiquidRateModel.sol";
 import {YLiquidPositionNFT} from "./YLiquidPositionNFT.sol";
-import {YLiquidTypes} from "./YLiquidTypes.sol";
 
-contract YLiquidMarket is BaseHealthCheck {
+contract YLiquidMarket is BaseHealthCheck, ReentrancyGuard {
     using SafeERC20 for ERC20;
+    using SafeERC20 for IERC20;
+
+    enum PositionState {
+        Requested,
+        Active,
+        ReadyToSettle,
+        Closed,
+        Defaulted
+    }
+
+    struct Position {
+        address asset;
+        address adapter;
+        uint128 principal;
+        uint32 riskPremiumBps;
+        uint64 startTime;
+        uint64 expectedEndTime;
+        PositionState state;
+    }
 
     uint256 public constant BPS = 10_000;
     uint256 public constant SECONDS_PER_YEAR = 365 days;
@@ -20,20 +41,16 @@ contract YLiquidMarket is BaseHealthCheck {
 
     IVault public yearnVault;
     IYLiquidRateModel public rateModel;
-    YLiquidPositionNFT public immutable positionNFT;
+    YLiquidPositionNFT public immutable POSITION_NFT;
 
     address public idleStrategy;
-    uint256 public idleStrategyDebtTarget;
-
     uint256 public totalPrincipalActive;
     uint256 public bountyBps;
     bool public paused;
 
     mapping(address => bool) public allowedAdapters;
     mapping(address => uint32) public adapterRiskPremiumBps;
-    mapping(uint256 => YLiquidTypes.Position) public positions;
-
-    uint256 private _lock;
+    mapping(uint256 => Position) public positions;
 
     event IdleStrategyUpdated(address indexed strategy);
     event PauseUpdated(bool paused);
@@ -56,13 +73,6 @@ contract YLiquidMarket is BaseHealthCheck {
         _;
     }
 
-    modifier nonReentrant() {
-        require(_lock == 0, "reentrant");
-        _lock = 1;
-        _;
-        _lock = 0;
-    }
-
     constructor(
         address asset_,
         address yearnVault_,
@@ -76,7 +86,7 @@ contract YLiquidMarket is BaseHealthCheck {
         yearnVault = IVault(yearnVault_);
         rateModel = IYLiquidRateModel(rateModel_);
         bountyBps = 100;
-        positionNFT = new YLiquidPositionNFT(nftName, nftSymbol, address(this));
+        POSITION_NFT = new YLiquidPositionNFT(nftName, nftSymbol, address(this));
     }
 
     function setIdleStrategy(address strategy) external onlyManagement {
@@ -130,7 +140,7 @@ contract YLiquidMarket is BaseHealthCheck {
         require(principal > 0, "zero principal");
 
         address resolvedReceiver = receiver == address(0) ? msg.sender : receiver;
-        tokenId = positionNFT.mint(msg.sender);
+        tokenId = POSITION_NFT.mint(msg.sender);
 
         totalPrincipalActive += principal;
         _pullForBorrow(principal);
@@ -143,23 +153,26 @@ contract YLiquidMarket is BaseHealthCheck {
         uint256 expectedEndTime = block.timestamp + expectedDurationSeconds;
         require(expectedEndTime <= type(uint64).max, "end overflow");
 
-        positions[tokenId] = YLiquidTypes.Position({
-            owner: msg.sender,
+        positions[tokenId] = Position({
             asset: address(asset),
             adapter: adapter,
             principal: uint128(principal),
             riskPremiumBps: adapterRiskPremiumBps[adapter],
             startTime: uint64(block.timestamp),
             expectedEndTime: uint64(expectedEndTime),
-            state: YLiquidTypes.PositionState.Active
+            state: PositionState.Active
         });
 
         emit PositionOpened(tokenId, adapter, msg.sender, principal, expectedDurationSeconds);
     }
 
+    function positionOwner(uint256 tokenId) external view returns (address) {
+        return POSITION_NFT.ownerOf(tokenId);
+    }
+
     function quoteDebt(uint256 tokenId) public view returns (uint256 amountOwed) {
-        YLiquidTypes.Position memory position = positions[tokenId];
-        require(position.state == YLiquidTypes.PositionState.Active, "bad state");
+        Position memory position = positions[tokenId];
+        require(position.state == PositionState.Active, "bad state");
 
         uint256 elapsed = block.timestamp - position.startTime;
         uint256 expected = position.expectedEndTime - position.startTime;
@@ -175,9 +188,9 @@ contract YLiquidMarket is BaseHealthCheck {
         nonReentrant
         returns (uint256 amountOwed)
     {
-        YLiquidTypes.Position storage position = positions[tokenId];
-        require(position.state == YLiquidTypes.PositionState.Active, "bad state");
-        require(msg.sender == positionNFT.ownerOf(tokenId), "not owner");
+        Position storage position = positions[tokenId];
+        require(position.state == PositionState.Active, "bad state");
+        require(msg.sender == POSITION_NFT.ownerOf(tokenId), "not owner");
 
         amountOwed = quoteDebt(tokenId);
         address resolvedReceiver = receiver == address(0) ? msg.sender : receiver;
@@ -190,9 +203,9 @@ contract YLiquidMarket is BaseHealthCheck {
         uint256 repaid = balAfter - balBefore;
         require(repaid >= amountOwed, "insolvent settle");
 
-        position.state = YLiquidTypes.PositionState.Closed;
+        position.state = PositionState.Closed;
         totalPrincipalActive -= position.principal;
-        positionNFT.burn(tokenId);
+        POSITION_NFT.burn(tokenId);
 
         _shiftMarketToIdle(repaid);
         emit PositionSettled(tokenId, msg.sender, repaid);
@@ -205,8 +218,8 @@ contract YLiquidMarket is BaseHealthCheck {
         nonReentrant
         returns (uint256 recovered)
     {
-        YLiquidTypes.Position storage position = positions[tokenId];
-        require(position.state == YLiquidTypes.PositionState.Active, "bad state");
+        Position storage position = positions[tokenId];
+        require(position.state == PositionState.Active, "bad state");
         uint256 expectedDuration = position.expectedEndTime - position.startTime;
         uint256 forceCloseTime =
             uint256(position.startTime) + ((expectedDuration * FORCE_CLOSE_DELAY_MULTIPLIER_BPS) / BPS);
@@ -217,23 +230,22 @@ contract YLiquidMarket is BaseHealthCheck {
 
         uint256 balBefore = asset.balanceOf(address(this));
         IYLiquidAdapter(position.adapter).executeForceClose(
-            tokenId, positionNFT.ownerOf(tokenId), address(asset), amountOwed, resolvedReceiver, callbackData
+            tokenId, POSITION_NFT.ownerOf(tokenId), address(asset), amountOwed, resolvedReceiver, callbackData
         );
         uint256 balAfter = asset.balanceOf(address(this));
         recovered = balAfter - balBefore;
 
-        uint256 bounty = (recovered * bountyBps) / BPS;
+        uint256 surplus = recovered > amountOwed ? recovered - amountOwed : 0;
+        uint256 bounty = (surplus * bountyBps) / BPS;
         if (bounty > 0) {
             asset.safeTransfer(msg.sender, bounty);
         }
 
-        position.state = YLiquidTypes.PositionState.Defaulted;
+        position.state = PositionState.Defaulted;
         totalPrincipalActive -= position.principal;
-        positionNFT.burn(tokenId);
+        POSITION_NFT.burn(tokenId);
 
-        if (recovered > bounty) {
-            _shiftMarketToIdle(recovered - bounty);
-        }
+        _shiftMarketToIdle(recovered - bounty);
 
         emit PositionForceClosed(tokenId, msg.sender, recovered, bounty);
     }
@@ -275,9 +287,7 @@ contract YLiquidMarket is BaseHealthCheck {
         yearnVault.update_debt(address(this), _currentDebt(address(this)) + amount);
     }
 
-    function _shiftMarketToIdle(uint256 amount) internal {
-        if (amount == 0) return;
-
+    function _shiftMarketToIdle(uint256) internal {
         // Max's will take care of exact amounts.
         yearnVault.update_debt(address(this), 0);
         yearnVault.update_debt(idleStrategy, type(uint256).max);
@@ -304,4 +314,12 @@ contract YLiquidMarket is BaseHealthCheck {
     function availableWithdrawLimit(address) public view override returns (uint256) {
         return asset.balanceOf(address(this));
     }
+
+    function rescue(address token) external onlyManagement {
+        require(token != address(asset), "cannot rescue asset");
+
+        address management = ITokenizedStrategy(address(this)).management();
+        IERC20(token).safeTransfer(management, IERC20(token).balanceOf(address(this)));
+    }
+
 }

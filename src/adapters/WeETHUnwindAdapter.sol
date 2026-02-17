@@ -6,14 +6,14 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {ReentrancyGuard} from "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import {IYLiquidAdapter, IYLiquidMarketPositionReader} from "../interfaces/IYLiquidAdapter.sol";
 import {AdapterProxy} from "./AdapterProxy.sol";
-import {IQueue} from "../interfaces/IQueue.sol";
-import {ISteth} from "../interfaces/ISteth.sol";
 import {IWETH9} from "../interfaces/IWETH9.sol";
 import {IYLiquidAdapterCallbackReceiver} from "../interfaces/IYLiquidAdapterCallbackReceiver.sol";
-import {IwstETH} from "../interfaces/IwstETH.sol";
+import {IWeETH} from "../interfaces/IWeETH.sol";
+import {IEtherFiLiquidityPool} from "../interfaces/IEtherFiLiquidityPool.sol";
+import {IEtherFiWithdrawRequestNFT} from "../interfaces/IEtherFiWithdrawRequestNFT.sol";
 import {ITokenizedStrategy} from "@tokenized-strategy/interfaces/ITokenizedStrategy.sol";
 
-contract WstETHUnwindAdapter is IYLiquidAdapter, ReentrancyGuard {
+contract WeETHUnwindAdapter is IYLiquidAdapter, ReentrancyGuard {
     using SafeERC20 for *;
 
     uint256 public constant WAD = 1e18;
@@ -35,17 +35,18 @@ contract WstETHUnwindAdapter is IYLiquidAdapter, ReentrancyGuard {
         Status status;
     }
 
-    IQueue internal constant WITHDRAWAL_QUEUE =
-        IQueue(0x889edC2eDab5f40e902b864aD4d7AdE8E412F9B1); // stETH withdrawal queue
+    IEtherFiLiquidityPool internal constant LIQUIDITY_POOL =
+        IEtherFiLiquidityPool(0x308861A430be4cce5502d0A12724771Fc6DaF216);
 
-    ISteth public constant STETH =
-        ISteth(0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84);
+    IEtherFiWithdrawRequestNFT internal constant WITHDRAW_REQUEST_NFT =
+        IEtherFiWithdrawRequestNFT(0x7d5706f6ef3F89B3951E23e557CDFBC3239D4E2c);
 
     address public immutable MARKET;
     IWETH9 public constant WETH = IWETH9(0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2);
-    IwstETH public constant WSTETH = IwstETH(0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0);
+    IERC20 public constant EETH = IERC20(0x35fA164735182de50811E8e2E824cFb9B6118ac2);
+    IWeETH public constant WEETH = IWeETH(0xCd5fE23C85820F7B72D0926FC9b05b43E359b7ee);
 
-    /// @notice The min rate of WETH to steth
+    /// @notice The min rate of WETH to eETH
     uint256 public minRateWad;
     uint64 public maxDurationSeconds;
 
@@ -58,7 +59,6 @@ contract WstETHUnwindAdapter is IYLiquidAdapter, ReentrancyGuard {
         require(msg.sender == MARKET, "not market");
         _;
     }
-
 
     constructor(address _market, uint256 _minRateWad) {
         require(_market != address(0), "zero market");
@@ -103,8 +103,8 @@ contract WstETHUnwindAdapter is IYLiquidAdapter, ReentrancyGuard {
         require(receiver != address(0), "zero receiver");
         require(amount > 0 && collateralAmount > 0, "zero amount");
 
-        uint256 stEthAmount = WSTETH.getStETHByWstETH(collateralAmount);
-        require(stEthAmount >= amount * minRateWad / WAD, "slippage");
+        uint256 eEthAmount = WEETH.getEETHByWeETH(collateralAmount);
+        require(eEthAmount >= amount * minRateWad / WAD, "slippage");
 
         WETH.safeTransfer(receiver, amount);
         IYLiquidAdapterCallbackReceiver(receiver).onYLiquidAdapterCallback(
@@ -118,9 +118,9 @@ contract WstETHUnwindAdapter is IYLiquidAdapter, ReentrancyGuard {
 
         AdapterProxy proxy = new AdapterProxy(address(this));
 
-        WSTETH.safeTransferFrom(receiver, address(proxy), collateralAmount);
-        uint256 requestId = _withdrawStEth(proxy, collateralAmount, stEthAmount);
-        
+        WEETH.safeTransferFrom(receiver, address(proxy), collateralAmount);
+        uint256 requestId = _withdrawEEth(proxy, collateralAmount);
+
         require(requestId > 0, "missing request id");
 
         positions[tokenId] = Position({
@@ -191,7 +191,7 @@ contract WstETHUnwindAdapter is IYLiquidAdapter, ReentrancyGuard {
             owner: owner,
             proxy: address(position.proxy),
             loanAsset: address(WETH),
-            collateralAsset: address(WSTETH),
+            collateralAsset: address(WEETH),
             principal: position.principal,
             collateralAmount: position.collateralAmount,
             expectedUnlockTime: expectedEndTime,
@@ -200,42 +200,37 @@ contract WstETHUnwindAdapter is IYLiquidAdapter, ReentrancyGuard {
         });
     }
 
-    function _withdrawStEth(AdapterProxy proxy, uint256 collateralAmount, uint256 stEthAmount) internal returns (uint256 requestId) {
-        AdapterProxy.Call[] memory calls = new AdapterProxy.Call[](3);
+    function _withdrawEEth(AdapterProxy proxy, uint256 collateralAmount) internal returns (uint256 requestId) {
+        AdapterProxy.Call[] memory unwrapCalls = new AdapterProxy.Call[](1);
+        unwrapCalls[0] =
+            AdapterProxy.Call({target: address(WEETH), value: 0, data: abi.encodeCall(IWeETH.unwrap, collateralAmount)});
+        proxy.execute(unwrapCalls);
 
-        calls[0] = AdapterProxy.Call({
-            target: address(WSTETH),
+        uint256 eEthAmount = EETH.balanceOf(address(proxy));
+        require(eEthAmount > 0, "zero eeth");
+
+        AdapterProxy.Call[] memory withdrawCalls = new AdapterProxy.Call[](2);
+        withdrawCalls[0] = AdapterProxy.Call({
+            target: address(EETH),
             value: 0,
-            data: abi.encodeCall(IwstETH.unwrap, collateralAmount)
+            data: abi.encodeCall(IERC20.approve, (address(LIQUIDITY_POOL), eEthAmount))
+        });
+        withdrawCalls[1] = AdapterProxy.Call({
+            target: address(LIQUIDITY_POOL),
+            value: 0,
+            data: abi.encodeCall(IEtherFiLiquidityPool.requestWithdraw, (address(proxy), eEthAmount))
         });
 
-        calls[1] = AdapterProxy.Call({
-            target: address(STETH),
-            value: 0,
-            data: abi.encodeCall(IERC20.approve, (address(WITHDRAWAL_QUEUE), stEthAmount))
-        });
-
-        uint256[] memory _amounts = new uint256[](1);
-        _amounts[0] = stEthAmount;
-
-        calls[2] = AdapterProxy.Call({
-            target: address(WITHDRAWAL_QUEUE),
-            value: 0,
-            data: abi.encodeCall(IQueue.requestWithdrawals, (_amounts, address(proxy)))
-        });
-
-        bytes[] memory results = proxy.execute(calls);
-        uint256[] memory requestIds = abi.decode(results[2], (uint256[]));
-        require(requestIds.length > 0, "missing request id");
-        requestId = requestIds[0];
+        bytes[] memory results = proxy.execute(withdrawCalls);
+        requestId = abi.decode(results[1], (uint256));
     }
 
     function _claimWithdrawal(AdapterProxy proxy, uint256 requestId) internal returns (uint256 claimedEth) {
         AdapterProxy.Call[] memory calls = new AdapterProxy.Call[](1);
         calls[0] = AdapterProxy.Call({
-            target: address(WITHDRAWAL_QUEUE),
+            target: address(WITHDRAW_REQUEST_NFT),
             value: 0,
-            data: abi.encodeCall(IQueue.claimWithdrawal, (requestId))
+            data: abi.encodeCall(IEtherFiWithdrawRequestNFT.claimWithdraw, (requestId))
         });
         proxy.execute(calls);
 
@@ -287,7 +282,7 @@ contract WstETHUnwindAdapter is IYLiquidAdapter, ReentrancyGuard {
             receiver,
             address(WETH),
             amount,
-            address(WSTETH),
+            address(WEETH),
             collateralAmount
         );
     }
@@ -305,7 +300,7 @@ contract WstETHUnwindAdapter is IYLiquidAdapter, ReentrancyGuard {
             receiver,
             address(WETH),
             amount,
-            address(WSTETH),
+            address(WEETH),
             collateralAmount
         );
     }
@@ -316,5 +311,4 @@ contract WstETHUnwindAdapter is IYLiquidAdapter, ReentrancyGuard {
 
         IERC20(token).safeTransfer(management, IERC20(token).balanceOf(address(this)));
     }
-
 }

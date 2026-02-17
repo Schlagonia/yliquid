@@ -3,31 +3,29 @@ pragma solidity ^0.8.24;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {IAavePool} from "../interfaces/IAavePool.sol";
+import {IMorpho} from "../interfaces/IMorpho.sol";
 import {IYLiquidAdapterCallbackReceiver} from "../interfaces/IYLiquidAdapterCallbackReceiver.sol";
 import {IYLiquidManagedAdapter} from "../interfaces/IYLiquidManagedAdapter.sol";
 import {ITokenizedStrategy} from "@tokenized-strategy/interfaces/ITokenizedStrategy.sol";
 
-contract AaveGenericReceiver is IYLiquidAdapterCallbackReceiver {
+contract MorphoGenericReceiver is IYLiquidAdapterCallbackReceiver {
     using SafeERC20 for IERC20;
 
     uint8 internal constant PHASE_OPEN = 1;
-    uint256 internal constant REPAY_RATE_MODE = 2;
 
     struct OpenCallbackData {
-        address collateralAsset;
-        address collateralAToken;
+        IMorpho.MarketParams marketParams;
         uint256 collateralAmount;
     }
 
-    IAavePool public immutable POOL;
+    IMorpho public immutable MORPHO;
     address public immutable ADAPTER;
 
-    constructor(address pool_, address adapter_) {
-        require(pool_ != address(0), "zero pool");
+    constructor(address morpho_, address adapter_) {
+        require(morpho_ != address(0), "zero morpho");
         require(adapter_ != address(0), "zero adapter");
 
-        POOL = IAavePool(pool_);
+        MORPHO = IMorpho(morpho_);
         ADAPTER = adapter_;
     }
 
@@ -49,19 +47,22 @@ contract AaveGenericReceiver is IYLiquidAdapterCallbackReceiver {
 
         OpenCallbackData memory openData = abi.decode(data, (OpenCallbackData));
 
-        require(openData.collateralAsset != address(0), "zero collateral asset");
-        require(openData.collateralAToken != address(0), "zero collateral atoken");
+        require(openData.marketParams.loanToken != address(0), "zero loan asset");
+        require(openData.marketParams.collateralToken != address(0), "zero collateral asset");
         require(collateralAmount > 0, "zero collateral");
+        require(token == openData.marketParams.loanToken, "loan asset mismatch");
+        require(MORPHO.isAuthorized(owner, address(this)), "not authorized by owner");
 
-        IERC20(token).forceApprove(address(POOL), amount);
-        POOL.repay(token, amount, REPAY_RATE_MODE, owner);
+        IERC20(token).forceApprove(address(MORPHO), amount);
+        MORPHO.repay(openData.marketParams, amount, 0, owner, bytes(""));
 
-        IERC20(openData.collateralAToken).safeTransferFrom(owner, address(this), collateralAmount);
-
-        uint256 withdrawn = POOL.withdraw(openData.collateralAsset, collateralAmount, address(this));
+        IERC20 collateralAsset = IERC20(openData.marketParams.collateralToken);
+        uint256 collateralBefore = collateralAsset.balanceOf(address(this));
+        MORPHO.withdrawCollateral(openData.marketParams, collateralAmount, owner, address(this));
+        uint256 withdrawn = collateralAsset.balanceOf(address(this)) - collateralBefore;
         require(withdrawn > 0, "zero withdrawn");
 
-        IERC20(openData.collateralAsset).forceApprove(ADAPTER, withdrawn);
+        collateralAsset.forceApprove(ADAPTER, withdrawn);
     }
 
     function rescue(address token) external {

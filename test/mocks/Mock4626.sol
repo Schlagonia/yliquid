@@ -11,7 +11,7 @@ contract Mock4626 {
         uint256 max_debt;
     }
 
-    IERC20 public immutable underlying;
+    IERC20 public immutable UNDERLYING;
 
     mapping(address => uint256) public shareBalance;
     uint256 public totalShares;
@@ -22,7 +22,7 @@ contract Mock4626 {
     uint256 public lastDebtTarget;
 
     constructor(address asset_) {
-        underlying = IERC20(asset_);
+        UNDERLYING = IERC20(asset_);
     }
 
     function balanceOf(address account) external view returns (uint256) {
@@ -30,7 +30,7 @@ contract Mock4626 {
     }
 
     function asset() external view returns (address) {
-        return address(underlying);
+        return address(UNDERLYING);
     }
 
     function update_debt(address strategy, uint256 targetDebt) external returns (uint256) {
@@ -42,16 +42,16 @@ contract Mock4626 {
             uint256 deltaIncrease = targetDebt - currentDebt;
             // In tests, only msg.sender strategy receives real token movements.
             if (strategy == msg.sender) {
-                underlying.transfer(strategy, deltaIncrease);
+                UNDERLYING.transfer(strategy, deltaIncrease);
             }
         } else if (targetDebt < currentDebt) {
             uint256 deltaDecrease = currentDebt - targetDebt;
             // Real Yearn can pull debt without ERC20 allowance mechanics.
             // Local tests optionally emulate pull if allowance exists.
             if (strategy == msg.sender) {
-                uint256 allowed = underlying.allowance(strategy, address(this));
+                uint256 allowed = UNDERLYING.allowance(strategy, address(this));
                 if (allowed >= deltaDecrease) {
-                    underlying.transferFrom(strategy, address(this), deltaDecrease);
+                    UNDERLYING.transferFrom(strategy, address(this), deltaDecrease);
                 }
             }
         }
@@ -72,7 +72,7 @@ contract Mock4626 {
 
     function deposit(uint256 assets, address receiver) external returns (uint256 shares) {
         shares = assets;
-        underlying.transferFrom(msg.sender, address(this), assets);
+        UNDERLYING.transferFrom(msg.sender, address(this), assets);
         shareBalance[receiver] += shares;
         totalShares += shares;
     }
@@ -82,7 +82,7 @@ contract Mock4626 {
         shareBalance[owner] -= shares;
         totalShares -= shares;
         assetsOut = shares;
-        underlying.transfer(receiver, assetsOut);
+        UNDERLYING.transfer(receiver, assetsOut);
     }
 
     function withdraw(uint256 assets, address receiver, address owner) external returns (uint256 shares) {
@@ -90,7 +90,7 @@ contract Mock4626 {
         shares = assets;
         shareBalance[owner] -= shares;
         totalShares -= shares;
-        underlying.transfer(receiver, assets);
+        UNDERLYING.transfer(receiver, assets);
     }
 
     function convertToShares(uint256 assets) external pure returns (uint256) {
@@ -102,11 +102,11 @@ contract Mock4626 {
     }
 
     function totalAssets() external view returns (uint256) {
-        return underlying.balanceOf(address(this));
+        return UNDERLYING.balanceOf(address(this));
     }
 
     function totalIdle() external view returns (uint256) {
-        return underlying.balanceOf(address(this));
+        return UNDERLYING.balanceOf(address(this));
     }
 
     function maxRedeem(address) external pure returns (uint256) {

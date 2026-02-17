@@ -83,7 +83,6 @@ export const yLiquidMarketAbi = [
     stateMutability: "view",
     inputs: [{ name: "tokenId", type: "uint256" }],
     outputs: [
-      { name: "owner", type: "address" },
       { name: "asset", type: "address" },
       { name: "adapter", type: "address" },
       { name: "principal", type: "uint128" },
@@ -92,5 +91,12 @@ export const yLiquidMarketAbi = [
       { name: "expectedEndTime", type: "uint64" },
       { name: "state", type: "uint8" },
     ],
+  },
+  {
+    type: "function",
+    name: "positionOwner",
+    stateMutability: "view",
+    inputs: [{ name: "tokenId", type: "uint256" }],
+    outputs: [{ name: "owner", type: "address" }],
   },
 ] as const;

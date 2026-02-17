@@ -10,7 +10,9 @@ import {YLiquidRateModel} from "../src/YLiquidRateModel.sol";
 import {YLiquidMarket} from "../src/YLiquidMarket.sol";
 import {SUSDeAdapter} from "../src/adapters/SUSDeAdapter.sol";
 import {WstETHUnwindAdapter} from "../src/adapters/WstETHUnwindAdapter.sol";
+import {WeETHUnwindAdapter} from "../src/adapters/WeETHUnwindAdapter.sol";
 import {AaveGenericReceiver} from "../src/receivers/AaveGenericReceiver.sol";
+import {MorphoGenericReceiver} from "../src/receivers/MorphoGenericReceiver.sol";
 
 contract DeployYLiquid is Script {
     // -------------------------------------------------------------------------
@@ -20,7 +22,7 @@ contract DeployYLiquid is Script {
     bool internal constant USE_FACTORY = true;
 
     // Existing vault mode (USE_FACTORY = false)
-    address internal constant EXISTING_YEARN_VAULT = address(0);
+    address internal constant EXISTING_YEARN_VAULT = address(0x87F68CFbd245c8F94871A4E373a247393386513B);
 
     // Factory mode (USE_FACTORY = true)
     address internal constant VAULT_FACTORY = 0x770D0d1Fb036483Ed4AbB6d53c1C88fb277D812F;
@@ -52,6 +54,15 @@ contract DeployYLiquid is Script {
     // Optional Aave generic receiver (requires WSTETH_ADDRESS != 0)
     address internal constant AAVE_POOL = 0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2;
 
+    // Optional weETH unwind adapter (set address(0) to skip)
+    address internal constant WEETH_ADDRESS = 0xCd5fE23C85820F7B72D0926FC9b05b43E359b7ee;
+    uint256 internal constant WEETH_MIN_RATE_WAD = 1.1e18;
+    uint64 internal constant WEETH_MAX_DURATION_SECONDS = 7 days; // 0 = adapter default
+    uint32 internal constant WEETH_RISK_PREMIUM_BPS = 0;
+
+    // Optional Morpho generic receiver (requires WEETH_ADDRESS != 0)
+    address internal constant MORPHO = 0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb;
+
     // -------------------------------------------------------------------------
 
     struct DeployResult {
@@ -61,6 +72,8 @@ contract DeployYLiquid is Script {
         address susdeAdapter;
         address wstEthAdapter;
         address aaveReceiver;
+        address weEthAdapter;
+        address morphoReceiver;
     }
 
     function run() external returns (DeployResult memory result) {
@@ -94,7 +107,7 @@ contract DeployYLiquid is Script {
 
         if (SUSDE_ADDRESS != address(0)) {
             SUSDeAdapter susdeAdapter =
-                new SUSDeAdapter(address(market), MARKET_ASSET, SUSDE_ADDRESS, SUSDE_MIN_RATE_WAD);
+                new SUSDeAdapter(address(market), SUSDE_MIN_RATE_WAD);
             market.setAdapterAllowed(address(susdeAdapter), true);
             market.setAdapterRiskPremium(address(susdeAdapter), SUSDE_RISK_PREMIUM_BPS);
             result.susdeAdapter = address(susdeAdapter);
@@ -102,7 +115,7 @@ contract DeployYLiquid is Script {
 
         if (WSTETH_ADDRESS != address(0)) {
             WstETHUnwindAdapter wstEthAdapter =
-                new WstETHUnwindAdapter(address(market), MARKET_ASSET, WSTETH_ADDRESS, WSTETH_MIN_RATE_WAD);
+                new WstETHUnwindAdapter(address(market), WSTETH_MIN_RATE_WAD);
             if (WSTETH_MAX_DURATION_SECONDS > 0) {
                 wstEthAdapter.setMaxDurationSeconds(WSTETH_MAX_DURATION_SECONDS);
             }
@@ -115,12 +128,29 @@ contract DeployYLiquid is Script {
             }
         }
 
+        if (WEETH_ADDRESS != address(0)) {
+            WeETHUnwindAdapter weEthAdapter =
+                new WeETHUnwindAdapter(address(market), WEETH_MIN_RATE_WAD);
+            if (WEETH_MAX_DURATION_SECONDS > 0) {
+                weEthAdapter.setMaxDurationSeconds(WEETH_MAX_DURATION_SECONDS);
+            }
+            market.setAdapterAllowed(address(weEthAdapter), true);
+            market.setAdapterRiskPremium(address(weEthAdapter), WEETH_RISK_PREMIUM_BPS);
+            result.weEthAdapter = address(weEthAdapter);
+
+            if (MORPHO != address(0)) {
+                result.morphoReceiver = address(new MorphoGenericReceiver(MORPHO, address(weEthAdapter)));
+            }
+        }
+
         console2.log("vault:", result.vault);
         console2.log("rateModel:", result.rateModel);
         console2.log("market:", result.market);
         console2.log("susdeAdapter:", result.susdeAdapter);
         console2.log("wstEthAdapter:", result.wstEthAdapter);
         console2.log("aaveReceiver:", result.aaveReceiver);
+        console2.log("weEthAdapter:", result.weEthAdapter);
+        console2.log("morphoReceiver:", result.morphoReceiver);
     }
 
     function _configureVault(address yearnVault, address market, address idleStrategy) internal {
@@ -161,6 +191,10 @@ contract DeployYLiquid is Script {
 
         if (AAVE_POOL != address(0)) {
             require(WSTETH_ADDRESS != address(0), "aave pool requires wsteth adapter");
+        }
+
+        if (MORPHO != address(0)) {
+            require(WEETH_ADDRESS != address(0), "morpho requires weeth adapter");
         }
     }
 }

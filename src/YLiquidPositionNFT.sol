@@ -4,7 +4,7 @@ pragma solidity ^0.8.24;
 contract YLiquidPositionNFT {
     string public name;
     string public symbol;
-    address public immutable market;
+    address public immutable MARKET;
 
     uint256 internal _nextTokenId;
 
@@ -17,25 +17,20 @@ contract YLiquidPositionNFT {
     event Approval(address indexed owner, address indexed approved, uint256 indexed tokenId);
     event ApprovalForAll(address indexed owner, address indexed operator, bool approved);
 
-    error NotMarket();
-    error InvalidReceiver();
-    error NotAuthorized();
-    error TokenDoesNotExist();
-
     modifier onlyMarket() {
-        if (msg.sender != market) revert NotMarket();
+        require(msg.sender == MARKET, "not market");
         _;
     }
 
     constructor(string memory name_, string memory symbol_, address market_) {
         name = name_;
         symbol = symbol_;
-        market = market_;
+        MARKET = market_;
         _nextTokenId = 1;
     }
 
     function mint(address to) external onlyMarket returns (uint256 tokenId) {
-        if (to == address(0)) revert InvalidReceiver();
+        require(to != address(0), "invalid receiver");
 
         tokenId = _nextTokenId++;
         _ownerOf[tokenId] = to;
@@ -46,7 +41,7 @@ contract YLiquidPositionNFT {
 
     function burn(uint256 tokenId) external onlyMarket {
         address owner = _ownerOf[tokenId];
-        if (owner == address(0)) revert TokenDoesNotExist();
+        require(owner != address(0), "token does not exist");
 
         delete _ownerOf[tokenId];
         delete _tokenApprovals[tokenId];
@@ -57,17 +52,17 @@ contract YLiquidPositionNFT {
 
     function ownerOf(uint256 tokenId) public view returns (address) {
         address owner = _ownerOf[tokenId];
-        if (owner == address(0)) revert TokenDoesNotExist();
+        require(owner != address(0), "token does not exist");
         return owner;
     }
 
     function balanceOf(address owner) external view returns (uint256) {
-        if (owner == address(0)) revert InvalidReceiver();
+        require(owner != address(0), "invalid receiver");
         return _balanceOf[owner];
     }
 
     function getApproved(uint256 tokenId) external view returns (address) {
-        if (_ownerOf[tokenId] == address(0)) revert TokenDoesNotExist();
+        require(_ownerOf[tokenId] != address(0), "token does not exist");
         return _tokenApprovals[tokenId];
     }
 
@@ -77,7 +72,7 @@ contract YLiquidPositionNFT {
 
     function approve(address to, uint256 tokenId) external {
         address owner = ownerOf(tokenId);
-        if (msg.sender != owner && !_operatorApprovals[owner][msg.sender]) revert NotAuthorized();
+        require(msg.sender == owner || _operatorApprovals[owner][msg.sender], "not authorized");
 
         _tokenApprovals[tokenId] = to;
         emit Approval(owner, to, tokenId);
@@ -89,14 +84,14 @@ contract YLiquidPositionNFT {
     }
 
     function transferFrom(address from, address to, uint256 tokenId) public {
-        if (to == address(0)) revert InvalidReceiver();
+        require(to != address(0), "invalid receiver");
 
         address owner = ownerOf(tokenId);
-        if (owner != from) revert NotAuthorized();
+        require(owner == from, "not authorized");
 
         bool isApproved = msg.sender == owner || _tokenApprovals[tokenId] == msg.sender
             || _operatorApprovals[owner][msg.sender];
-        if (!isApproved) revert NotAuthorized();
+        require(isApproved, "not authorized");
 
         delete _tokenApprovals[tokenId];
         _ownerOf[tokenId] = to;

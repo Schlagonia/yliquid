@@ -64,6 +64,7 @@ contract AaveGenericReceiverWstETHForkTest is Test {
     function setUp() external {
         string memory rpc = vm.envString("ETH_RPC_URL");
         vm.createSelectFork(rpc);
+        vm.makePersistent(address(this));
 
         address vaultAddr =
             IVaultFactory(FACTORY).deploy_new_vault(WETH, "yLiquid Generic Receiver Fork Vault", "ylGR", address(this), 7 days);
@@ -72,7 +73,7 @@ contract AaveGenericReceiverWstETHForkTest is Test {
         rateModel = new YLiquidRateModel(0, 1, 0);
         market = new YLiquidMarket(WETH, vaultAddr, address(rateModel), "yLiquid Position", "yLPOS");
         idleStrategy = new IdleHoldStrategy(WETH, "yLiquid Idle Strategy");
-        adapter = new WstETHUnwindAdapter(address(market), WETH, WSTETH, 1e18);
+        adapter = new WstETHUnwindAdapter(address(market), 1.01e18);
         receiver = new AaveGenericReceiver(AAVE_POOL, address(adapter));
         aWstETH = _resolveAaveAToken(WSTETH);
         require(aWstETH != address(0), "zero awsteth");
@@ -112,14 +113,12 @@ contract AaveGenericReceiverWstETHForkTest is Test {
 
         (
             AdapterProxy proxy,
-            address positionReceiver,
             uint128 principal,
             uint128 locked,
             uint256 requestId,
             WstETHUnwindAdapter.Status status
         ) = adapter.positions(tokenId);
         vm.label(address(proxy), "WstETHUnwindProxy");
-        assertEq(positionReceiver, address(receiver), "receiver mismatch");
         assertEq(principal, PRINCIPAL_WETH, "principal mismatch");
         assertEq(locked, LOCKED_WSTETH, "locked mismatch");
         assertGt(requestId, 0, "request id");
@@ -141,7 +140,7 @@ contract AaveGenericReceiverWstETHForkTest is Test {
         vm.prank(OWNER);
         market.settleAndRepay(tokenId, address(receiver), bytes(""));
 
-        (proxy,,,, requestId, status) = adapter.positions(tokenId);
+        (proxy,,, requestId, status) = adapter.positions(tokenId);
         assertEq(uint8(status), uint8(WstETHUnwindAdapter.Status.Closed), "position not closed");
         assertEq(market.totalPrincipalActive(), 0, "principal active");
         assertEq(IERC20(WETH).balanceOf(address(proxy)), 0, "proxy weth dust");

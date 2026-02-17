@@ -29,14 +29,11 @@ export type AdapterOption = {
 
 export type AdapterPositionView = {
   owner: Address;
-  receiver: Address;
   proxy: Address;
   loanAsset: Address;
   collateralAsset: Address;
-  settlementAsset: Address;
   principal: bigint;
   collateralAmount: bigint;
-  expectedSettlementAmount: bigint;
   expectedUnlockTime: bigint;
   referenceId: bigint;
   status: bigint;

@@ -152,9 +152,6 @@ export const TrackedPositionCard = ({
       queueReady !== false,
   );
   const ownerHref = owner ? `${explorerBaseUrl}/address/${owner}` : undefined;
-  const receiverHref = adapterView?.receiver
-    ? `${explorerBaseUrl}/address/${adapterView.receiver}`
-    : undefined;
   const proxyHref = adapterView?.proxy
     ? `${explorerBaseUrl}/address/${adapterView.proxy}`
     : undefined;
@@ -182,18 +179,6 @@ export const TrackedPositionCard = ({
           </dd>
         </div>
         <div>
-          <dt>Receiver</dt>
-          <dd>
-            {receiverHref ? (
-              <a className="address-link" href={receiverHref} target="_blank" rel="noreferrer">
-                {shortAddress(adapterView?.receiver)}
-              </a>
-            ) : (
-              shortAddress(adapterView?.receiver)
-            )}
-          </dd>
-        </div>
-        <div>
           <dt>Proxy</dt>
           <dd>
             {proxyHref ? (
@@ -212,10 +197,6 @@ export const TrackedPositionCard = ({
         <div>
           <dt>Collateral</dt>
           <dd>{formatAmount(adapterView?.collateralAmount, 18, 6)} wstETH</dd>
-        </div>
-        <div>
-          <dt>Expected Settle</dt>
-          <dd>{formatAmount(adapterView?.expectedSettlementAmount, 18, 6)} WETH</dd>
         </div>
         <div>
           <dt>Debt Quote</dt>
