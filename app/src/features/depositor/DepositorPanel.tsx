@@ -100,12 +100,11 @@ export const DepositorPanel = () => {
 
   const shareBalance = (shareBalanceData as bigint | undefined) ?? 0n;
 
-  const { data: holdingsAssetsData } = useReadContract({
+  const { data: totalAssetsData } = useReadContract({
     address: safeVault,
     abi: erc4626Abi,
-    functionName: "convertToAssets",
-    args: [shareBalance],
-    query: { enabled: Boolean(vaultAddress && isConnected) },
+    functionName: "totalAssets",
+    query: { enabled: Boolean(vaultAddress) },
   });
 
   const { data: maxWithdrawData } = useReadContract({
@@ -183,7 +182,7 @@ export const DepositorPanel = () => {
     query: { enabled: Boolean(assetAddress && isConnected) },
   });
 
-  const holdingsAssets = (holdingsAssetsData as bigint | undefined) ?? 0n;
+  const totalVaultAssets = (totalAssetsData as bigint | undefined) ?? 0n;
   const maxWithdraw = (maxWithdrawData as bigint | undefined) ?? 0n;
   const allowance = (allowanceData as bigint | undefined) ?? 0n;
   const walletAssetBalance = (walletAssetBalanceData as bigint | undefined) ?? 0n;
@@ -408,7 +407,7 @@ export const DepositorPanel = () => {
         <article className="metric-card">
           <span className="metric-label">Total Vault Value</span>
           <strong>
-            {formatAmount(holdingsAssets, decimals, 6)} {symbol}
+            {formatAmount(totalVaultAssets, decimals, 6)} {symbol}
           </strong>
         </article>
         <article className="metric-card">

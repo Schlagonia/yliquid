@@ -22,6 +22,13 @@ export const erc4626Abi = [
   },
   {
     type: "function",
+    name: "totalAssets",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
     name: "maxWithdraw",
     stateMutability: "view",
     inputs: [{ name: "owner", type: "address" }],
