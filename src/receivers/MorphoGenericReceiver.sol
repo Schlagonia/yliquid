@@ -5,8 +5,11 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {IMorpho} from "../interfaces/IMorpho.sol";
 import {IYLiquidAdapterCallbackReceiver} from "../interfaces/IYLiquidAdapterCallbackReceiver.sol";
-import {IYLiquidManagedAdapter} from "../interfaces/IYLiquidManagedAdapter.sol";
 import {ITokenizedStrategy} from "@tokenized-strategy/interfaces/ITokenizedStrategy.sol";
+
+interface IYLiquidMarketAdapterRegistry {
+    function allowedAdapters(address adapter) external view returns (bool);
+}
 
 contract MorphoGenericReceiver is IYLiquidAdapterCallbackReceiver {
     using SafeERC20 for IERC20;
@@ -19,14 +22,14 @@ contract MorphoGenericReceiver is IYLiquidAdapterCallbackReceiver {
     }
 
     IMorpho public immutable MORPHO;
-    address public immutable ADAPTER;
+    address public immutable MARKET;
 
-    constructor(address morpho_, address adapter_) {
+    constructor(address morpho_, address market_) {
         require(morpho_ != address(0), "zero morpho");
-        require(adapter_ != address(0), "zero adapter");
+        require(market_ != address(0), "zero market");
 
         MORPHO = IMorpho(morpho_);
-        ADAPTER = adapter_;
+        MARKET = market_;
     }
 
     function onYLiquidAdapterCallback(
@@ -40,7 +43,7 @@ contract MorphoGenericReceiver is IYLiquidAdapterCallbackReceiver {
         external
         override
     {
-        require(msg.sender == ADAPTER, "not adapter");
+        require(IYLiquidMarketAdapterRegistry(MARKET).allowedAdapters(msg.sender), "adapter not approved");
         require(phase == PHASE_OPEN, "unsupported phase");
         require(owner != address(0), "zero owner");
         require(amount > 0, "zero amount");
@@ -62,12 +65,11 @@ contract MorphoGenericReceiver is IYLiquidAdapterCallbackReceiver {
         uint256 withdrawn = collateralAsset.balanceOf(address(this)) - collateralBefore;
         require(withdrawn > 0, "zero withdrawn");
 
-        collateralAsset.forceApprove(ADAPTER, withdrawn);
+        collateralAsset.forceApprove(msg.sender, withdrawn);
     }
 
     function rescue(address token) external {
-        address market = IYLiquidManagedAdapter(ADAPTER).MARKET();
-        address management = ITokenizedStrategy(market).management();
+        address management = ITokenizedStrategy(MARKET).management();
         require(msg.sender == management, "not management");
 
         IERC20(token).safeTransfer(management, IERC20(token).balanceOf(address(this)));

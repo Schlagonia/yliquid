@@ -4,10 +4,12 @@ import {
   encodeAbiParameters,
   erc20Abi,
   formatUnits,
+  getAddress,
   isAddress,
   parseAbiItem,
   zeroAddress,
   type Address,
+  type Hex,
 } from "viem";
 import {
   useAccount,
@@ -23,20 +25,34 @@ import {
   aavePoolAbi,
   aaveProtocolDataProviderAbi,
 } from "../../lib/abi/aaveAbi";
+import { morphoAbi } from "../../lib/abi/morphoAbi";
 import { yLiquidMarketAbi } from "../../lib/abi/yLiquidMarketAbi";
 import { yLiquidPositionNftAbi } from "../../lib/abi/yLiquidPositionNftAbi";
 import { yLiquidRateModelAbi } from "../../lib/abi/yLiquidRateModelAbi";
 import { formatAmount, parseAmountInput, shortAddress } from "../../lib/format";
 import { TrackedPositionCard } from "./TrackedPositionCard";
+import type { MorphoMarket, MorphoMarketParams, MorphoPosition } from "../../types/protocol";
 
 const STORAGE_KEY = "yliquid_tracked_token_ids";
-const COLLATERAL_USAGE_BPS = 9_900n; // 99%
+const COLLATERAL_USAGE_BPS = 9_990n; // 99.9%
 const BPS = 10_000n;
 const LOG_SCAN_INITIAL_CHUNK = 250_000n;
 const LOG_SCAN_MIN_CHUNK = 2_000n;
+const MORPHO_VIRTUAL_SHARES = 1_000_000n;
+const MORPHO_VIRTUAL_ASSETS = 1n;
+const MORPHO_AUTH_TX_LABEL_ENABLE = "Authorize Morpho Receiver Authorization";
+const MORPHO_AUTH_TX_LABEL_DISABLE = "Unset Morpho Receiver Authorization";
 const POSITION_TRANSFER_EVENT = parseAbiItem(
   "event Transfer(address indexed from, address indexed to, uint256 indexed tokenId)",
 );
+
+const MORPHO_MARKET_PARAMS_COMPONENTS = [
+  { name: "loanToken", type: "address" },
+  { name: "collateralToken", type: "address" },
+  { name: "oracle", type: "address" },
+  { name: "irm", type: "address" },
+  { name: "lltv", type: "uint256" },
+] as const;
 
 type ReserveTokensTuple = readonly [Address, Address, Address];
 
@@ -58,15 +74,123 @@ const formatBpsAsPercent = (bps: BpsValue): string => {
   return `${whole.toString()}.${fraction}% APR`;
 };
 
+const parseMarketIdInput = (value: string): Hex | undefined => {
+  const normalized = value.trim();
+  if (!/^0x[0-9a-fA-F]{64}$/.test(normalized)) return undefined;
+  return normalized as Hex;
+};
+
+const toRecord = (value: unknown): Record<string, unknown> | undefined => {
+  if (value && typeof value === "object") return value as Record<string, unknown>;
+  return undefined;
+};
+
+const toBigInt = (value: unknown): bigint | undefined => {
+  if (typeof value === "bigint") return value;
+  return undefined;
+};
+
+const toAddressValue = (value: unknown): Address | undefined => {
+  if (typeof value !== "string") return undefined;
+  if (!isAddress(value, { strict: false })) return undefined;
+  return value as Address;
+};
+
+const normalizeMorphoMarketParams = (value: unknown): MorphoMarketParams | undefined => {
+  const tuple = Array.isArray(value) ? value : undefined;
+  const record = toRecord(value);
+
+  const loanToken = toAddressValue(record?.loanToken ?? tuple?.[0]);
+  const collateralToken = toAddressValue(record?.collateralToken ?? tuple?.[1]);
+  const oracle = toAddressValue(record?.oracle ?? tuple?.[2]);
+  const irm = toAddressValue(record?.irm ?? tuple?.[3]);
+  const lltv = toBigInt(record?.lltv ?? tuple?.[4]);
+
+  if (!loanToken || !collateralToken || !oracle || !irm || lltv === undefined) return undefined;
+
+  return {
+    loanToken,
+    collateralToken,
+    oracle,
+    irm,
+    lltv,
+  };
+};
+
+const normalizeMorphoPosition = (value: unknown): MorphoPosition | undefined => {
+  const tuple = Array.isArray(value) ? value : undefined;
+  const record = toRecord(value);
+
+  const supplyShares = toBigInt(record?.supplyShares ?? tuple?.[0]);
+  const borrowShares = toBigInt(record?.borrowShares ?? tuple?.[1]);
+  const collateral = toBigInt(record?.collateral ?? tuple?.[2]);
+
+  if (supplyShares === undefined || borrowShares === undefined || collateral === undefined) {
+    return undefined;
+  }
+
+  return {
+    supplyShares,
+    borrowShares,
+    collateral,
+  };
+};
+
+const normalizeMorphoMarket = (value: unknown): MorphoMarket | undefined => {
+  const tuple = Array.isArray(value) ? value : undefined;
+  const record = toRecord(value);
+
+  const totalSupplyAssets = toBigInt(record?.totalSupplyAssets ?? tuple?.[0]);
+  const totalSupplyShares = toBigInt(record?.totalSupplyShares ?? tuple?.[1]);
+  const totalBorrowAssets = toBigInt(record?.totalBorrowAssets ?? tuple?.[2]);
+  const totalBorrowShares = toBigInt(record?.totalBorrowShares ?? tuple?.[3]);
+  const lastUpdate = toBigInt(record?.lastUpdate ?? tuple?.[4]);
+  const fee = toBigInt(record?.fee ?? tuple?.[5]);
+
+  if (
+    totalSupplyAssets === undefined ||
+    totalSupplyShares === undefined ||
+    totalBorrowAssets === undefined ||
+    totalBorrowShares === undefined ||
+    lastUpdate === undefined ||
+    fee === undefined
+  ) {
+    return undefined;
+  }
+
+  return {
+    totalSupplyAssets,
+    totalSupplyShares,
+    totalBorrowAssets,
+    totalBorrowShares,
+    lastUpdate,
+    fee,
+  };
+};
+
+const divUp = (numerator: bigint, denominator: bigint): bigint => {
+  if (numerator === 0n) return 0n;
+  return ((numerator - 1n) / denominator) + 1n;
+};
+
+const morphoBorrowSharesToAssetsUp = (
+  shares: bigint,
+  totalBorrowAssets: bigint,
+  totalBorrowShares: bigint,
+): bigint => {
+  const adjustedAssets = totalBorrowAssets + MORPHO_VIRTUAL_ASSETS;
+  const adjustedShares = totalBorrowShares + MORPHO_VIRTUAL_SHARES;
+  return divUp(shares * adjustedAssets, adjustedShares);
+};
+
 export const LeveragerPanel = () => {
   const marketAddress = protocolConfig.contracts.yLiquidMarket;
   const safeMarket = marketAddress ?? zeroAddress;
 
   const aavePoolAddress = protocolConfig.contracts.aavePool;
-  const safeAavePool = aavePoolAddress ?? zeroAddress;
+  const morphoAddress = protocolConfig.contracts.morpho;
 
   const safeWeth = protocolConfig.tokens.weth ?? zeroAddress;
-  const safeWstEth = protocolConfig.tokens.wstEth ?? zeroAddress;
 
   const { address, isConnected } = useAccount();
   const publicClient = usePublicClient();
@@ -78,10 +202,17 @@ export const LeveragerPanel = () => {
   const selectedAdapterAddress = selectedAdapter?.adapter;
   const safeSelectedAdapter = selectedAdapterAddress ?? zeroAddress;
 
+  const isAaveRoute = selectedAdapter?.venue === "aave";
+  const isMorphoRoute = selectedAdapter?.venue === "morpho";
+  const defaultMorphoMarketId = selectedAdapter?.morphoMarketId;
+
   const [principalInput, setPrincipalInput] = useState("");
   const [collateralInput, setCollateralInput] = useState("");
   const [receiverInput, setReceiverInput] = useState<string>(selectedAdapter?.receiver ?? "");
   const [aTokenInput, setATokenInput] = useState<string>(protocolConfig.tokens.aWstEth ?? "");
+  const [morphoMarketIdInput, setMorphoMarketIdInput] = useState<string>(
+    defaultMorphoMarketId ?? "",
+  );
   const [hasAutoBuiltInputs, setHasAutoBuiltInputs] = useState(false);
 
   const [tokenIdInput, setTokenIdInput] = useState("");
@@ -94,6 +225,9 @@ export const LeveragerPanel = () => {
   const [txLabel, setTxLabel] = useState("");
   const [settlingTokenId, setSettlingTokenId] = useState<number | null>(null);
   const [errorText, setErrorText] = useState("");
+  const [morphoAuthorizationOverride, setMorphoAuthorizationOverride] = useState<boolean | undefined>(
+    undefined,
+  );
 
   const { writeContractAsync, isPending: writePending } = useWriteContract();
   const {
@@ -101,6 +235,14 @@ export const LeveragerPanel = () => {
     isLoading: txConfirming,
     isSuccess: txConfirmed,
   } = useWaitForTransactionReceipt({ hash: txHash });
+
+  const normalizedReceiverInput = receiverInput.trim();
+  const receiverAddress = isAddress(normalizedReceiverInput, { strict: false })
+    ? (getAddress(normalizedReceiverInput) as Address)
+    : undefined;
+  const safeReceiver = receiverAddress ?? zeroAddress;
+
+  const resolvedMorphoMarketId = parseMarketIdInput(morphoMarketIdInput);
 
   const { data: availableLiquidityData } = useReadContract({
     address: safeMarket,
@@ -112,7 +254,7 @@ export const LeveragerPanel = () => {
   const { data: positionNftData } = useReadContract({
     address: safeMarket,
     abi: yLiquidMarketAbi,
-    functionName: "positionNFT",
+    functionName: "POSITION_NFT",
     query: { enabled: Boolean(marketAddress) },
   });
 
@@ -148,11 +290,16 @@ export const LeveragerPanel = () => {
     query: { enabled: Boolean(protocolConfig.tokens.weth) },
   });
 
+  const selectedCollateralAsset = selectedAdapter?.collateralAsset;
+  const safeSelectedCollateralAsset = selectedCollateralAsset ?? zeroAddress;
+
+  // Aave route reads.
+  const safeAavePool = aavePoolAddress ?? zeroAddress;
   const { data: aaveAddressesProviderData } = useReadContract({
     address: safeAavePool,
     abi: aavePoolAbi,
     functionName: "ADDRESSES_PROVIDER",
-    query: { enabled: Boolean(aavePoolAddress) },
+    query: { enabled: Boolean(isAaveRoute && aavePoolAddress) },
   });
 
   const aaveAddressesProvider = aaveAddressesProviderData as Address | undefined;
@@ -164,7 +311,7 @@ export const LeveragerPanel = () => {
     functionName: "getPoolDataProvider",
     query: {
       enabled: Boolean(
-        aaveAddressesProvider && !protocolConfig.contracts.aaveDataProvider,
+        isAaveRoute && aaveAddressesProvider && !protocolConfig.contracts.aaveDataProvider,
       ),
     },
   });
@@ -173,13 +320,13 @@ export const LeveragerPanel = () => {
     protocolConfig.contracts.aaveDataProvider ?? (aaveDataProviderFromPoolData as Address | undefined);
   const safeAaveDataProvider = resolvedAaveDataProvider ?? zeroAddress;
 
-  const { data: wstEthReserveTokensData } = useReadContract({
+  const { data: collateralReserveTokensData } = useReadContract({
     address: safeAaveDataProvider,
     abi: aaveProtocolDataProviderAbi,
     functionName: "getReserveTokensAddresses",
-    args: [safeWstEth],
+    args: [safeSelectedCollateralAsset],
     query: {
-      enabled: Boolean(resolvedAaveDataProvider && protocolConfig.tokens.wstEth),
+      enabled: Boolean(isAaveRoute && resolvedAaveDataProvider && selectedCollateralAsset),
     },
   });
 
@@ -189,30 +336,32 @@ export const LeveragerPanel = () => {
     functionName: "getReserveTokensAddresses",
     args: [safeWeth],
     query: {
-      enabled: Boolean(resolvedAaveDataProvider && protocolConfig.tokens.weth),
+      enabled: Boolean(isAaveRoute && resolvedAaveDataProvider && protocolConfig.tokens.weth),
     },
   });
 
-  const wstEthReserveTokens = wstEthReserveTokensData as ReserveTokensTuple | undefined;
+  const collateralReserveTokens = collateralReserveTokensData as ReserveTokensTuple | undefined;
   const wethReserveTokens = wethReserveTokensData as ReserveTokensTuple | undefined;
 
-  const resolvedAWstEth = protocolConfig.tokens.aWstEth ?? wstEthReserveTokens?.[0];
+  const resolvedAaveCollateralAToken = isAaveRoute
+    ? (selectedCollateralAsset &&
+      protocolConfig.tokens.wstEth &&
+      selectedCollateralAsset.toLowerCase() === protocolConfig.tokens.wstEth.toLowerCase()
+        ? (protocolConfig.tokens.aWstEth ?? collateralReserveTokens?.[0])
+        : collateralReserveTokens?.[0])
+    : undefined;
+
   const resolvedVariableDebtWeth = wethReserveTokens?.[2];
 
-  const safeAWstEth = resolvedAWstEth ?? zeroAddress;
+  const safeAaveCollateralAToken = resolvedAaveCollateralAToken ?? zeroAddress;
   const safeVariableDebtWeth = resolvedVariableDebtWeth ?? zeroAddress;
 
-  const receiverAddress = isAddress(receiverInput)
-    ? (receiverInput as Address)
-    : undefined;
-  const safeReceiver = receiverAddress ?? zeroAddress;
-
-  const { data: aWstEthBalanceData } = useReadContract({
-    address: safeAWstEth,
+  const { data: aaveCollateralBalanceData } = useReadContract({
+    address: safeAaveCollateralAToken,
     abi: erc20Abi,
     functionName: "balanceOf",
     args: [walletAddress],
-    query: { enabled: Boolean(isConnected && resolvedAWstEth) },
+    query: { enabled: Boolean(isConnected && isAaveRoute && resolvedAaveCollateralAToken) },
   });
 
   const { data: wethDebtBalanceData } = useReadContract({
@@ -220,23 +369,80 @@ export const LeveragerPanel = () => {
     abi: erc20Abi,
     functionName: "balanceOf",
     args: [walletAddress],
-    query: { enabled: Boolean(isConnected && resolvedVariableDebtWeth) },
+    query: { enabled: Boolean(isConnected && isAaveRoute && resolvedVariableDebtWeth) },
   });
 
-  const { data: collateralDecimalsData } = useReadContract({
-    address: safeAWstEth,
+  const { data: aaveCollateralDecimalsData } = useReadContract({
+    address: safeAaveCollateralAToken,
     abi: erc20Abi,
     functionName: "decimals",
-    query: { enabled: Boolean(resolvedAWstEth) },
+    query: { enabled: Boolean(isAaveRoute && resolvedAaveCollateralAToken) },
   });
 
-  const { data: collateralAllowanceData } = useReadContract({
-    address: safeAWstEth,
+  const { data: aaveCollateralAllowanceData } = useReadContract({
+    address: safeAaveCollateralAToken,
     abi: erc20Abi,
     functionName: "allowance",
     args: [walletAddress, safeReceiver],
     query: {
-      enabled: Boolean(isConnected && resolvedAWstEth && receiverAddress),
+      enabled: Boolean(
+        isConnected && isAaveRoute && resolvedAaveCollateralAToken && receiverAddress,
+      ),
+    },
+  });
+
+  // Morpho route reads.
+  const safeMorpho = morphoAddress ?? zeroAddress;
+  const { data: morphoMarketParamsData } = useReadContract({
+    address: safeMorpho,
+    abi: morphoAbi,
+    functionName: "idToMarketParams",
+    args: resolvedMorphoMarketId ? [resolvedMorphoMarketId] : undefined,
+    query: {
+      enabled: Boolean(isMorphoRoute && morphoAddress && resolvedMorphoMarketId),
+    },
+  });
+
+  const { data: morphoPositionData } = useReadContract({
+    address: safeMorpho,
+    abi: morphoAbi,
+    functionName: "position",
+    args:
+      resolvedMorphoMarketId && isConnected
+        ? [resolvedMorphoMarketId, walletAddress]
+        : undefined,
+    query: {
+      enabled: Boolean(isMorphoRoute && morphoAddress && resolvedMorphoMarketId && isConnected),
+    },
+  });
+
+  const { data: morphoMarketData } = useReadContract({
+    address: safeMorpho,
+    abi: morphoAbi,
+    functionName: "market",
+    args: resolvedMorphoMarketId ? [resolvedMorphoMarketId] : undefined,
+    query: {
+      enabled: Boolean(isMorphoRoute && morphoAddress && resolvedMorphoMarketId),
+    },
+  });
+
+  const { data: morphoAuthorizationData, refetch: refetchMorphoAuthorization } = useReadContract({
+    address: safeMorpho,
+    abi: morphoAbi,
+    functionName: "isAuthorized",
+    args: receiverAddress ? [walletAddress, receiverAddress] : undefined,
+    query: {
+      enabled: Boolean(isMorphoRoute && morphoAddress && isConnected && receiverAddress),
+      refetchInterval: 8_000,
+    },
+  });
+
+  const { data: morphoCollateralDecimalsData } = useReadContract({
+    address: safeSelectedCollateralAsset,
+    abi: erc20Abi,
+    functionName: "decimals",
+    query: {
+      enabled: Boolean(isMorphoRoute && selectedCollateralAsset),
     },
   });
 
@@ -255,9 +461,24 @@ export const LeveragerPanel = () => {
     },
   });
 
-  const aWstEthBalance = (aWstEthBalanceData as bigint | undefined) ?? 0n;
+  const aaveCollateralBalance = (aaveCollateralBalanceData as bigint | undefined) ?? 0n;
   const wethDebtBalance = (wethDebtBalanceData as bigint | undefined) ?? 0n;
-  const collateralAllowance = (collateralAllowanceData as bigint | undefined) ?? 0n;
+  const aaveCollateralAllowance = (aaveCollateralAllowanceData as bigint | undefined) ?? 0n;
+  const morphoMarketParams = normalizeMorphoMarketParams(morphoMarketParamsData);
+  const morphoPosition = normalizeMorphoPosition(morphoPositionData);
+  const morphoMarket = normalizeMorphoMarket(morphoMarketData);
+  const morphoCollateralBalance = morphoPosition?.collateral ?? 0n;
+  const morphoBorrowAssets =
+    morphoMarket && morphoPosition
+      ? morphoBorrowSharesToAssetsUp(
+          morphoPosition.borrowShares,
+          morphoMarket.totalBorrowAssets,
+          morphoMarket.totalBorrowShares,
+        )
+      : 0n;
+  const morphoAuthorizationOnchain = Boolean(morphoAuthorizationData ?? false);
+  const morphoAuthorized = morphoAuthorizationOverride ?? morphoAuthorizationOnchain;
+
   const openPositionCount = Number(openPositionCountData ?? 0n);
   const baseRateBps = normalizeBps(baseRateBpsData as BpsValue);
   const adapterRiskPremiumBps = normalizeBps(adapterRiskPremiumBpsData as BpsValue);
@@ -268,11 +489,19 @@ export const LeveragerPanel = () => {
   const routeRiskPremiumLabel = formatBpsAsPercent(adapterRiskPremiumBps ?? 0n);
 
   const wethDecimals = Number(wethDecimalsData ?? 18);
-  const collateralDecimals = Number(collateralDecimalsData ?? 18);
+  const collateralDecimals = isAaveRoute
+    ? Number(aaveCollateralDecimalsData ?? 18)
+    : Number(morphoCollateralDecimalsData ?? 18);
 
-  const suggestedCollateralAmount = (aWstEthBalance * COLLATERAL_USAGE_BPS) / BPS;
-  const suggestedPrincipalAmount =
-    wethDebtBalance > availableLiquidity ? availableLiquidity : wethDebtBalance;
+  const suggestedCollateralAmount = isAaveRoute
+    ? (aaveCollateralBalance * COLLATERAL_USAGE_BPS) / BPS
+    : (morphoCollateralBalance * COLLATERAL_USAGE_BPS) / BPS;
+
+  const suggestedPrincipalAmount = isAaveRoute
+    ? (wethDebtBalance > availableLiquidity ? availableLiquidity : wethDebtBalance)
+    : morphoBorrowAssets > availableLiquidity
+      ? availableLiquidity
+      : morphoBorrowAssets;
 
   const principalAmount = useMemo(
     () => parseAmountInput(principalInput, wethDecimals),
@@ -284,18 +513,32 @@ export const LeveragerPanel = () => {
   );
 
   const needsCollateralApproval =
-    collateralAmount > 0n && collateralAllowance < collateralAmount;
+    isAaveRoute && collateralAmount > 0n && aaveCollateralAllowance < collateralAmount;
+  const needsMorphoAuthorization =
+    isMorphoRoute && isConnected && Boolean(receiverAddress) && !morphoAuthorized;
+
   const noLiquidity = availableLiquidity === 0n;
   const willCapPrincipal =
     principalAmount > 0n && availableLiquidity > 0n && principalAmount > availableLiquidity;
   const effectivePrincipalAmount = willCapPrincipal ? availableLiquidity : principalAmount;
 
   const busy = writePending || txConfirming;
+  const morphoAuthorizationBusy =
+    busy && (txLabel === MORPHO_AUTH_TX_LABEL_ENABLE || txLabel === MORPHO_AUTH_TX_LABEL_DISABLE);
   const walletTokenIdSet = useMemo(() => new Set(walletOpenTokenIds), [walletOpenTokenIds]);
   const manualOnlyTrackedTokenIds = useMemo(
     () => trackedTokenIds.filter((tokenId) => !walletTokenIdSet.has(tokenId)),
     [trackedTokenIds, walletTokenIdSet],
   );
+
+  const morphoLoanMatches =
+    !morphoMarketParams ||
+    !protocolConfig.tokens.weth ||
+    morphoMarketParams.loanToken.toLowerCase() === protocolConfig.tokens.weth.toLowerCase();
+  const morphoCollateralMatches =
+    !morphoMarketParams ||
+    !selectedCollateralAsset ||
+    morphoMarketParams.collateralToken.toLowerCase() === selectedCollateralAsset.toLowerCase();
 
   useEffect(() => {
     const raw = window.localStorage.getItem(STORAGE_KEY);
@@ -320,10 +563,23 @@ export const LeveragerPanel = () => {
   }, [selectedAdapter?.receiver]);
 
   useEffect(() => {
-    if (!aTokenInput && resolvedAWstEth) {
-      setATokenInput(resolvedAWstEth);
+    if (!isMorphoRoute) return;
+    setMorphoMarketIdInput(defaultMorphoMarketId ?? "");
+  }, [isMorphoRoute, defaultMorphoMarketId]);
+
+  useEffect(() => {
+    if (!isAaveRoute) return;
+    if (resolvedAaveCollateralAToken) {
+      setATokenInput(resolvedAaveCollateralAToken);
     }
-  }, [aTokenInput, resolvedAWstEth]);
+  }, [selectedAdapterId, isAaveRoute, resolvedAaveCollateralAToken]);
+
+  useEffect(() => {
+    if (!isMorphoRoute) return;
+    if (!morphoMarketIdInput && defaultMorphoMarketId) {
+      setMorphoMarketIdInput(defaultMorphoMarketId);
+    }
+  }, [isMorphoRoute, morphoMarketIdInput, defaultMorphoMarketId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -363,8 +619,6 @@ export const LeveragerPanel = () => {
           let receivedLogs:
             | {
                 args: {
-                  from?: Address;
-                  to?: Address;
                   tokenId?: bigint;
                 };
               }[]
@@ -378,13 +632,13 @@ export const LeveragerPanel = () => {
               fromBlock,
               toBlock,
             });
-          } catch (error) {
+          } catch {
             if (chunkSize > LOG_SCAN_MIN_CHUNK) {
               chunkSize /= 2n;
               continue;
             }
 
-            throw error;
+            throw new Error("rpc_log_scan_failed");
           }
 
           const newlySeenTokenIds: bigint[] = [];
@@ -441,7 +695,7 @@ export const LeveragerPanel = () => {
             );
           }
         }
-      } catch (error) {
+      } catch {
         if (!cancelled) {
           setWalletOpenTokenIds([]);
           setWalletPositionsError(
@@ -465,8 +719,21 @@ export const LeveragerPanel = () => {
   useEffect(() => {
     if (txConfirmed) {
       setSettlingTokenId(null);
+      if (txLabel === MORPHO_AUTH_TX_LABEL_ENABLE || txLabel === MORPHO_AUTH_TX_LABEL_DISABLE) {
+        void refetchMorphoAuthorization();
+        setMorphoAuthorizationOverride(undefined);
+      }
     }
-  }, [txConfirmed]);
+  }, [txConfirmed, txLabel, refetchMorphoAuthorization]);
+
+  useEffect(() => {
+    if (!isMorphoRoute) {
+      setMorphoAuthorizationOverride(undefined);
+      return;
+    }
+
+    setMorphoAuthorizationOverride(undefined);
+  }, [isMorphoRoute, receiverAddress, address]);
 
   useEffect(() => {
     if (!receipt || txLabel !== "Open Position") return;
@@ -499,10 +766,17 @@ export const LeveragerPanel = () => {
     if (principalInput || collateralInput) return;
     if (suggestedPrincipalAmount === 0n && suggestedCollateralAmount === 0n) return;
 
-    setPrincipalInput(formatUnits(suggestedPrincipalAmount, wethDecimals));
-    setCollateralInput(formatUnits(suggestedCollateralAmount, collateralDecimals));
-    if (resolvedAWstEth) {
-      setATokenInput(resolvedAWstEth);
+    if (suggestedPrincipalAmount > 0n) {
+      setPrincipalInput(formatUnits(suggestedPrincipalAmount, wethDecimals));
+    }
+    if (suggestedCollateralAmount > 0n) {
+      setCollateralInput(formatUnits(suggestedCollateralAmount, collateralDecimals));
+    }
+    if (isAaveRoute && resolvedAaveCollateralAToken) {
+      setATokenInput(resolvedAaveCollateralAToken);
+    }
+    if (isMorphoRoute && defaultMorphoMarketId) {
+      setMorphoMarketIdInput(defaultMorphoMarketId);
     }
     setHasAutoBuiltInputs(true);
   }, [
@@ -513,7 +787,10 @@ export const LeveragerPanel = () => {
     suggestedCollateralAmount,
     wethDecimals,
     collateralDecimals,
-    resolvedAWstEth,
+    isAaveRoute,
+    resolvedAaveCollateralAToken,
+    isMorphoRoute,
+    defaultMorphoMarketId,
   ]);
 
   const addTrackedToken = () => {
@@ -528,12 +805,20 @@ export const LeveragerPanel = () => {
     setTrackedTokenIds((prev) => prev.filter((value) => value !== tokenId));
   };
 
-  const buildInputsFromAave = () => {
+  const buildInputsFromRoute = () => {
     setErrorText("");
-    setPrincipalInput(formatUnits(suggestedPrincipalAmount, wethDecimals));
-    setCollateralInput(formatUnits(suggestedCollateralAmount, collateralDecimals));
-    if (resolvedAWstEth) {
-      setATokenInput(resolvedAWstEth);
+
+    if (suggestedPrincipalAmount > 0n) {
+      setPrincipalInput(formatUnits(suggestedPrincipalAmount, wethDecimals));
+    }
+    if (suggestedCollateralAmount > 0n) {
+      setCollateralInput(formatUnits(suggestedCollateralAmount, collateralDecimals));
+    }
+    if (isAaveRoute && resolvedAaveCollateralAToken) {
+      setATokenInput(resolvedAaveCollateralAToken);
+    }
+    if (isMorphoRoute && defaultMorphoMarketId) {
+      setMorphoMarketIdInput(defaultMorphoMarketId);
     }
     setHasAutoBuiltInputs(true);
   };
@@ -541,22 +826,59 @@ export const LeveragerPanel = () => {
   const handleApproveCollateral = async () => {
     setErrorText("");
 
-    if (!isConnected || !resolvedAWstEth || !receiverAddress || collateralAmount === 0n) {
-      setErrorText("Enter a valid receiver, aWstETH token, and collateral amount.");
+    if (!isAaveRoute) return;
+
+    if (!isConnected || !resolvedAaveCollateralAToken || !receiverAddress || collateralAmount === 0n) {
+      setErrorText("Enter a valid receiver, collateral aToken, and collateral amount.");
       return;
     }
 
     try {
       const hash = await writeContractAsync({
-        address: resolvedAWstEth,
+        address: resolvedAaveCollateralAToken,
         abi: erc20Abi,
         functionName: "approve",
         args: [receiverAddress, collateralAmount],
       });
-      setTxLabel("Approve aWstETH");
+      setTxLabel("Approve Aave Collateral");
       setTxHash(hash);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Approval failed.";
+      setErrorText(message.split("\n")[0]);
+    }
+  };
+
+  const handleToggleMorphoAuthorization = async () => {
+    setErrorText("");
+
+    if (!isMorphoRoute) return;
+    if (!isConnected || !morphoAddress || !receiverAddress) {
+      setErrorText("Enter a valid Morpho receiver address first.");
+      return;
+    }
+
+    const nextAuthorizationState = !morphoAuthorized;
+    const nextTxLabel = nextAuthorizationState
+      ? MORPHO_AUTH_TX_LABEL_ENABLE
+      : MORPHO_AUTH_TX_LABEL_DISABLE;
+
+    try {
+      const hash = await writeContractAsync({
+        address: morphoAddress,
+        abi: morphoAbi,
+        functionName: "setAuthorization",
+        args: [receiverAddress, nextAuthorizationState],
+      });
+      setTxLabel(nextTxLabel);
+      setTxHash(hash);
+      setMorphoAuthorizationOverride(nextAuthorizationState);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Authorization update failed.";
+      if (message.toLowerCase().includes("already set")) {
+        setMorphoAuthorizationOverride(nextAuthorizationState);
+        void refetchMorphoAuthorization();
+        return;
+      }
       setErrorText(message.split("\n")[0]);
     }
   };
@@ -565,24 +887,31 @@ export const LeveragerPanel = () => {
     setErrorText("");
 
     if (!isConnected || !address || !marketAddress || !selectedAdapter?.adapter) return;
-    if (!protocolConfig.tokens.wstEth || principalAmount === 0n || collateralAmount === 0n) return;
+    if (principalAmount === 0n || collateralAmount === 0n) {
+      setErrorText("Principal and collateral must both be greater than zero.");
+      return;
+    }
     if (!receiverAddress) {
       setErrorText("Receiver contract address is invalid.");
       return;
     }
+    if (!selectedCollateralAsset) {
+      setErrorText("Route collateral asset is not configured.");
+      return;
+    }
 
     if (needsCollateralApproval) {
-      setErrorText("Approve aWstETH for the receiver before opening.");
+      setErrorText("Approve Aave collateral to the receiver before opening.");
+      return;
+    }
+
+    if (needsMorphoAuthorization) {
+      setErrorText("Authorize the Morpho receiver before opening.");
       return;
     }
 
     if (noLiquidity) {
       setErrorText("Market liquidity is currently zero.");
-      return;
-    }
-
-    if (!isAddress(aTokenInput)) {
-      setErrorText("Aave collateral token address is invalid.");
       return;
     }
 
@@ -593,14 +922,61 @@ export const LeveragerPanel = () => {
       return;
     }
 
-    const callbackData = encodeAbiParameters(
-      [
-        { name: "collateralAsset", type: "address" },
-        { name: "collateralAToken", type: "address" },
-        { name: "collateralAmount", type: "uint256" },
-      ],
-      [protocolConfig.tokens.wstEth, aTokenInput as Address, collateralAmount],
-    );
+    let callbackData: Hex = "0x";
+
+    if (isAaveRoute) {
+      if (!isAddress(aTokenInput)) {
+        setErrorText("Aave collateral token address is invalid.");
+        return;
+      }
+
+      callbackData = encodeAbiParameters(
+        [
+          { name: "collateralAsset", type: "address" },
+          { name: "collateralAToken", type: "address" },
+          { name: "collateralAmount", type: "uint256" },
+        ],
+        [selectedCollateralAsset, aTokenInput as Address, collateralAmount],
+      );
+    } else if (isMorphoRoute) {
+      if (!resolvedMorphoMarketId) {
+        setErrorText("Morpho market ID must be a valid bytes32 value.");
+        return;
+      }
+      if (!morphoMarketParams) {
+        setErrorText("Could not load Morpho market params for the configured market ID.");
+        return;
+      }
+      if (!morphoLoanMatches) {
+        setErrorText("Morpho market loan token does not match WETH.");
+        return;
+      }
+      if (!morphoCollateralMatches) {
+        setErrorText("Morpho market collateral token does not match this route.");
+        return;
+      }
+
+      callbackData = encodeAbiParameters(
+        [
+          {
+            name: "marketParams",
+            type: "tuple",
+            components: MORPHO_MARKET_PARAMS_COMPONENTS,
+          },
+          { name: "collateralAmount", type: "uint256" },
+        ],
+        [
+          {
+            loanToken: morphoMarketParams.loanToken,
+            collateralToken: morphoMarketParams.collateralToken,
+            oracle: morphoMarketParams.oracle,
+            irm: morphoMarketParams.irm,
+            lltv: morphoMarketParams.lltv,
+          },
+          collateralAmount,
+        ],
+      );
+    }
 
     try {
       const hash = await writeContractAsync({
@@ -647,13 +1023,36 @@ export const LeveragerPanel = () => {
     }
   };
 
-  if (!marketAddress || !selectedAdapter?.adapter || !aavePoolAddress) {
+  if (!selectedAdapter || !marketAddress || !selectedAdapter.adapter || !selectedAdapter.receiver || !selectedAdapter.collateralAsset) {
     return (
       <section className="panel panel-warning">
         <h2>Leverage Unwind</h2>
         <p>
-          Set <code>VITE_YLIQUID_MARKET</code>, <code>VITE_YLIQUID_WSTETH_ADAPTER</code>,
-          and <code>VITE_AAVE_POOL</code> in <code>app/.env</code> to enable this flow.
+          Set route contracts in <code>app/.env</code>: <code>VITE_YLIQUID_MARKET</code>,
+          <code> VITE_YLIQUID_WSTETH_ADAPTER</code>, <code>VITE_YLIQUID_WEETH_ADAPTER</code>,
+          <code> VITE_AAVE_GENERIC_RECEIVER</code>, and <code>VITE_MORPHO_GENERIC_RECEIVER</code>.
+        </p>
+      </section>
+    );
+  }
+
+  if (isAaveRoute && !aavePoolAddress) {
+    return (
+      <section className="panel panel-warning">
+        <h2>Leverage Unwind</h2>
+        <p>
+          Set <code>VITE_AAVE_POOL</code> in <code>app/.env</code> to enable the Aave unwind route.
+        </p>
+      </section>
+    );
+  }
+
+  if (isMorphoRoute && !morphoAddress) {
+    return (
+      <section className="panel panel-warning">
+        <h2>Leverage Unwind</h2>
+        <p>
+          Set <code>VITE_MORPHO</code> in <code>app/.env</code> to enable the Morpho unwind route.
         </p>
       </section>
     );
@@ -664,8 +1063,7 @@ export const LeveragerPanel = () => {
       <header className="section-head">
         <h2>Leverage Unwind</h2>
         <p>
-          We read your Aave loop, prefill unwind values, then run
-          <code> approve -&gt; openPosition</code>.
+          Pick a route, verify prerequisites, then run <code>openPosition</code>.
         </p>
       </header>
 
@@ -679,26 +1077,50 @@ export const LeveragerPanel = () => {
           <strong>{formatAmount(availableLiquidity, 18, 6)} WETH</strong>
         </article>
         <article className="metric-card">
-          <span className="metric-label">Your aWstETH Balance</span>
-          <strong>{formatAmount(aWstEthBalance, collateralDecimals, 6)}</strong>
-        </article>
-        <article className="metric-card">
-          <span className="metric-label">Your Aave WETH Debt</span>
-          <strong>{formatAmount(wethDebtBalance, wethDecimals, 6)} WETH</strong>
-        </article>
-        <article className="metric-card">
-          <span className="metric-label">Suggested Collateral (99%)</span>
-          <strong>{formatAmount(suggestedCollateralAmount, collateralDecimals, 6)}</strong>
+          <span className="metric-label">Current Borrow Rate</span>
+          <strong>{currentBorrowRateLabel}</strong>
         </article>
         <article className="metric-card">
           <span className="metric-label">Principal Used (Capped)</span>
           <strong>{formatAmount(effectivePrincipalAmount, wethDecimals, 6)} WETH</strong>
         </article>
+
+        {isAaveRoute && (
+          <>
+            <article className="metric-card">
+              <span className="metric-label">Your Aave Collateral (aToken)</span>
+              <strong>{formatAmount(aaveCollateralBalance, collateralDecimals, 6)}</strong>
+            </article>
+            <article className="metric-card">
+              <span className="metric-label">Your Aave WETH Debt</span>
+              <strong>{formatAmount(wethDebtBalance, wethDecimals, 6)} WETH</strong>
+            </article>
+          </>
+        )}
+
+        {isMorphoRoute && (
+          <>
+            <article className="metric-card">
+              <span className="metric-label">Your Morpho Collateral</span>
+              <strong>
+                {formatAmount(morphoCollateralBalance, collateralDecimals, 6)} {selectedAdapter.collateralSymbol}
+              </strong>
+            </article>
+            <article className="metric-card">
+              <span className="metric-label">Your Morpho Borrowed (Est.)</span>
+              <strong>{formatAmount(morphoBorrowAssets, wethDecimals, 6)} WETH</strong>
+            </article>
+          </>
+        )}
+
         <article className="metric-card">
-          <span className="metric-label">Current Borrow Rate</span>
-          <strong>{currentBorrowRateLabel}</strong>
+          <span className="metric-label">Suggested Collateral (99.9%)</span>
+          <strong>
+            {formatAmount(suggestedCollateralAmount, collateralDecimals, 6)} {selectedAdapter.collateralSymbol}
+          </strong>
         </article>
       </div>
+
       {isConnected && openPositionCount > 0 && (
         <p className="warning-text">
           This wallet has {openPositionCount} open position{openPositionCount > 1 ? "s" : ""}.
@@ -726,6 +1148,7 @@ export const LeveragerPanel = () => {
                 marketAddress={marketAddress}
                 positionNftAddress={positionNftAddress}
                 lidoQueueAddress={protocolConfig.contracts.lidoWithdrawalQueue}
+                etherFiWithdrawRequestNftAddress={protocolConfig.contracts.etherFiWithdrawRequestNft}
                 walletAddress={address}
                 settlingTokenId={settlingTokenId}
                 onSettle={handleSettle}
@@ -745,6 +1168,7 @@ export const LeveragerPanel = () => {
           Borrow APR for this route: <strong>{currentBorrowRateLabel}</strong> (base{" "}
           {baseRateLabel} + route premium {routeRiskPremiumLabel})
         </p>
+        <p className="hint">Note: this unwind transaction may leave small dust balances behind.</p>
 
         <div className="form-grid">
           <label>
@@ -772,7 +1196,7 @@ export const LeveragerPanel = () => {
           </label>
 
           <label>
-            Collateral to Lock (aWstETH)
+            Collateral to Lock ({selectedAdapter.collateralSymbol})
             <input
               value={collateralInput}
               onChange={(event) => setCollateralInput(event.target.value)}
@@ -790,14 +1214,27 @@ export const LeveragerPanel = () => {
             />
           </label>
 
-          <label>
-            Aave Collateral Token (aToken)
-            <input
-              value={aTokenInput}
-              onChange={(event) => setATokenInput(event.target.value)}
-              placeholder="0x..."
-            />
-          </label>
+          {isAaveRoute && (
+            <label>
+              Aave Collateral Token (aToken)
+              <input
+                value={aTokenInput}
+                onChange={(event) => setATokenInput(event.target.value)}
+                placeholder="0x..."
+              />
+            </label>
+          )}
+
+          {isMorphoRoute && (
+            <label>
+              Morpho Market ID (bytes32)
+              <input
+                value={morphoMarketIdInput}
+                onChange={(event) => setMorphoMarketIdInput(event.target.value)}
+                placeholder="0x..."
+              />
+            </label>
+          )}
         </div>
 
         <div className="button-row">
@@ -805,19 +1242,36 @@ export const LeveragerPanel = () => {
             type="button"
             className="button"
             disabled={busy || !isConnected}
-            onClick={buildInputsFromAave}
+            onClick={buildInputsFromRoute}
           >
-            Prefill From Aave
+            {isAaveRoute ? "Prefill From Aave" : "Prefill From Morpho"}
           </button>
 
-          <button
-            type="button"
-            className="button"
-            disabled={!isConnected || busy || !needsCollateralApproval}
-            onClick={handleApproveCollateral}
-          >
-            {busy && txLabel === "Approve aWstETH" ? "Approving..." : "Approve aWstETH"}
-          </button>
+          {isAaveRoute && (
+            <button
+              type="button"
+              className="button"
+              disabled={!isConnected || busy || !needsCollateralApproval}
+              onClick={handleApproveCollateral}
+            >
+              {busy && txLabel === "Approve Aave Collateral" ? "Approving..." : "Approve Collateral"}
+            </button>
+          )}
+
+          {isMorphoRoute && (
+            <button
+              type="button"
+              className="button"
+              disabled={!isConnected || busy || !receiverAddress}
+              onClick={handleToggleMorphoAuthorization}
+            >
+              {morphoAuthorizationBusy
+                ? "Updating Authorization..."
+                : morphoAuthorized
+                  ? "Unset Authorization"
+                  : "Authorize Receiver"}
+            </button>
+          )}
 
           <button
             type="button"
@@ -827,8 +1281,11 @@ export const LeveragerPanel = () => {
               busy ||
               principalAmount === 0n ||
               collateralAmount === 0n ||
-              needsCollateralApproval ||
-              noLiquidity
+              noLiquidity ||
+              !receiverAddress ||
+              (isAaveRoute && needsCollateralApproval) ||
+              (isMorphoRoute && !morphoAuthorized) ||
+              (isMorphoRoute && !resolvedMorphoMarketId)
             }
             onClick={handleOpenPosition}
           >
@@ -836,14 +1293,51 @@ export const LeveragerPanel = () => {
           </button>
         </div>
 
-        <p className="hint">
-          Receiver allowance: {formatAmount(collateralAllowance, collateralDecimals, 6)} / {formatAmount(collateralAmount, collateralDecimals, 6)} aWstETH
-        </p>
+        {isAaveRoute && (
+          <>
+            <p className="hint">
+              Receiver allowance: {formatAmount(aaveCollateralAllowance, collateralDecimals, 6)} /{" "}
+              {formatAmount(collateralAmount, collateralDecimals, 6)} aToken
+            </p>
 
-        {needsCollateralApproval && (
-          <p className="warning-text">
-            Approval needed: receiver cannot pull the selected collateral amount yet.
-          </p>
+            {needsCollateralApproval && (
+              <p className="warning-text">
+                Approval needed: the Aave receiver cannot pull your collateral aToken yet.
+              </p>
+            )}
+
+            {!!resolvedAaveCollateralAToken &&
+              isAddress(aTokenInput) &&
+              aTokenInput.toLowerCase() !== resolvedAaveCollateralAToken.toLowerCase() && (
+                <p className="warning-text">
+                  Custom aToken differs from Aave data provider output.
+                </p>
+              )}
+          </>
+        )}
+
+        {isMorphoRoute && (
+          <>
+            <p className="hint">
+              Morpho receiver authorization: <strong>{morphoAuthorized ? "Authorized" : "Missing"}</strong>
+            </p>
+            {resolvedMorphoMarketId === undefined && (
+              <p className="warning-text">Morpho market ID must be a valid bytes32 value.</p>
+            )}
+            {!morphoLoanMatches && (
+              <p className="warning-text">Selected market loan token is not WETH.</p>
+            )}
+            {!morphoCollateralMatches && (
+              <p className="warning-text">
+                Selected market collateral token does not match {selectedAdapter.collateralSymbol}.
+              </p>
+            )}
+            {needsMorphoAuthorization && (
+              <p className="warning-text">
+                Authorization needed: Morpho receiver uses auths, not ERC20 allowances.
+              </p>
+            )}
+          </>
         )}
 
         {willCapPrincipal && (
@@ -854,12 +1348,6 @@ export const LeveragerPanel = () => {
         {noLiquidity && (
           <p className="warning-text">
             Market liquidity is zero, so opening is temporarily blocked.
-          </p>
-        )}
-
-        {!!resolvedAWstEth && isAddress(aTokenInput) && aTokenInput.toLowerCase() !== resolvedAWstEth.toLowerCase() && (
-          <p className="warning-text">
-            Custom aToken differs from Aave data provider output.
           </p>
         )}
       </article>
@@ -893,6 +1381,7 @@ export const LeveragerPanel = () => {
                   marketAddress={marketAddress}
                   positionNftAddress={positionNftAddress}
                   lidoQueueAddress={protocolConfig.contracts.lidoWithdrawalQueue}
+                  etherFiWithdrawRequestNftAddress={protocolConfig.contracts.etherFiWithdrawRequestNft}
                   walletAddress={address}
                   settlingTokenId={settlingTokenId}
                   onSettle={handleSettle}

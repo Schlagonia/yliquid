@@ -32,10 +32,13 @@ const App = () => {
   const explorerAddresses = useMemo(
     (): ExplorerAddress[] => {
       const rawEntries: [string, Address | undefined][] = [
+        ["Yearn Vault", protocolConfig.contracts.yearnVault],
         ["yLiquid Market", protocolConfig.contracts.yLiquidMarket],
         ["Position NFT", protocolConfig.contracts.positionNft],
         ["wstETH Unwind Adapter", protocolConfig.contracts.wstEthAdapter],
+        ["weETH Unwind Adapter", protocolConfig.contracts.weEthAdapter],
         ["Aave Generic Receiver", protocolConfig.contracts.aaveReceiver],
+        ["Morpho Generic Receiver", protocolConfig.contracts.morphoReceiver],
       ];
 
       return rawEntries.flatMap(([label, address]) =>

@@ -9,6 +9,14 @@ import {MockERC20} from "./mocks/MockERC20.sol";
 import {IMorpho} from "../src/interfaces/IMorpho.sol";
 import {MorphoGenericReceiver} from "../src/receivers/MorphoGenericReceiver.sol";
 
+contract MockMarketAdapterRegistry {
+    mapping(address => bool) public allowedAdapters;
+
+    function setAdapterAllowed(address adapter, bool allowed) external {
+        allowedAdapters[adapter] = allowed;
+    }
+}
+
 contract MockMorpho is IMorpho {
     using SafeERC20 for IERC20;
 
@@ -117,6 +125,7 @@ contract MorphoGenericReceiverTest is Test {
     MockERC20 internal loanAsset;
     MockERC20 internal collateralAsset;
     MockMorpho internal morpho;
+    MockMarketAdapterRegistry internal market;
     MorphoGenericReceiver internal receiver;
     IMorpho.MarketParams internal marketParams;
 
@@ -124,7 +133,9 @@ contract MorphoGenericReceiverTest is Test {
         loanAsset = new MockERC20("Loan Asset", "LOAN", 18);
         collateralAsset = new MockERC20("Collateral Asset", "COLL", 18);
         morpho = new MockMorpho();
-        receiver = new MorphoGenericReceiver(address(morpho), ADAPTER);
+        market = new MockMarketAdapterRegistry();
+        market.setAdapterAllowed(ADAPTER, true);
+        receiver = new MorphoGenericReceiver(address(morpho), address(market));
 
         marketParams = IMorpho.MarketParams({
             loanToken: address(loanAsset),
@@ -169,6 +180,16 @@ contract MorphoGenericReceiverTest is Test {
             abi.encode(MorphoGenericReceiver.OpenCallbackData({marketParams: marketParams, collateralAmount: COLLATERAL_AMOUNT}));
 
         vm.expectRevert("not authorized by owner");
+        vm.prank(ADAPTER);
+        receiver.onYLiquidAdapterCallback(PHASE_OPEN, OWNER, address(loanAsset), REPAY_AMOUNT, COLLATERAL_AMOUNT, data);
+    }
+
+    function test_RevertsWhenAdapterNotApprovedByMarket() external {
+        market.setAdapterAllowed(ADAPTER, false);
+        bytes memory data =
+            abi.encode(MorphoGenericReceiver.OpenCallbackData({marketParams: marketParams, collateralAmount: COLLATERAL_AMOUNT}));
+
+        vm.expectRevert("adapter not approved");
         vm.prank(ADAPTER);
         receiver.onYLiquidAdapterCallback(PHASE_OPEN, OWNER, address(loanAsset), REPAY_AMOUNT, COLLATERAL_AMOUNT, data);
     }

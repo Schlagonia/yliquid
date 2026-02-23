@@ -72,7 +72,7 @@ export const yLiquidMarketAbi = [
   },
   {
     type: "function",
-    name: "positionNFT",
+    name: "POSITION_NFT",
     stateMutability: "view",
     inputs: [],
     outputs: [{ name: "", type: "address" }],

@@ -78,7 +78,7 @@ contract YLiquidWeETHMorphoReceiverForkTest is Test {
         market = new YLiquidMarket(WETH, vaultAddr, address(rateModel), "yLiquid Position", "yLPOS");
         idleStrategy = new IdleHoldStrategy(WETH, "yLiquid Idle Strategy");
         adapter = new WeETHUnwindAdapter(address(market), MIN_RATE_WAD);
-        receiver = new MorphoGenericReceiver(MORPHO, address(adapter));
+        receiver = new MorphoGenericReceiver(MORPHO, address(market));
 
         _configureVault();
         _configureMarket();
