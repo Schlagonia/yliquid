@@ -197,7 +197,18 @@ Failure modes:
 - `EtherFi Liquidity Pool`: `0x308861A430be4cce5502d0A12724771Fc6DaF216`
 - `EtherFi Withdraw Request NFT`: `0x7d5706f6ef3F89B3951E23e557CDFBC3239D4E2c`
 
-## 9) Integration Checklist
+## 9) Current Deployed Route Addresses (from `app/.env`)
+
+`VITE_CHAIN_ID=1`
+
+- `YLiquidMarket`: `0xBCC6180cc066F17B100a7302625e6845436d3C2C`
+- `YLiquidPositionNFT`: `0x1138894fE6D81B4b80Fa82572a9dD4F7a9c10ad7`
+- `WstETHUnwindAdapter`: `0x33E472b038575Bf745F5D42Dc58b09a6f971099B`
+- `WeETHUnwindAdapter`: `0x0A0e0580bD8493bE43CAd2910cb5497F696e9d12`
+- `AaveGenericReceiver`: `0x5859218BC87864f439c4AA5E84DB0496e36266cc`
+- `MorphoGenericReceiver`: `0x72c9158943D19cda3a9ad4eDE1F34cd8b7980143`
+
+## 10) Integration Checklist
 
 - [ ] receiver validates `msg.sender == adapter`
 - [ ] receiver validates `token == WETH` and `phase == 1`
