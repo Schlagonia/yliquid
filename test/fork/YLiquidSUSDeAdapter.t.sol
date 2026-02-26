@@ -150,7 +150,7 @@ contract YLiquidSUSDeAdapterForkTest is Test {
         bytes memory openCallbackData = abi.encode(LOCKED_SUSDE);
 
         uint256 tokenId = market.openPosition(
-            PRINCIPAL_USDC, address(adapter), address(receiver), LOCKED_SUSDE, openCallbackData
+            PRINCIPAL_USDC, address(adapter), address(receiver), SUSDE, LOCKED_SUSDE, openCallbackData
         );
 
         assertTrue(receiver.sawOpenCallback(), "open callback missing");
@@ -177,7 +177,7 @@ contract YLiquidSUSDeAdapterForkTest is Test {
         bytes memory openCallbackData = abi.encode(LOCKED_SUSDE);
 
         uint256 tokenId = market.openPosition(
-            PRINCIPAL_USDC, address(adapter), address(receiver), LOCKED_SUSDE, openCallbackData
+            PRINCIPAL_USDC, address(adapter), address(receiver), SUSDE, LOCKED_SUSDE, openCallbackData
         );
 
         bytes memory settleCallbackData = abi.encode(PRINCIPAL_USDC);

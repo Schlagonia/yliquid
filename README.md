@@ -30,6 +30,7 @@ Recent refactors already applied:
 - `src/adapters/SUSDeAdapter.sol`: sUSDe cooldown adapter.
 - `src/adapters/WstETHUnwindAdapter.sol`: wstETH unwind adapter.
 - `src/adapters/WeETHUnwindAdapter.sol`: weETH unwind adapter (Ether.fi withdraw queue path).
+- `src/adapters/GenericCollateralAdapter.sol`: owner-driven generic collateral adapter with oracle-based LTV checks.
 - `src/receivers/AaveGenericReceiver.sol`: stateless generic Aave callback receiver for owner-backed positions.
 - `src/receivers/MorphoGenericReceiver.sol`: stateless generic Morpho callback receiver for owner-backed positions.
 - `src/interfaces/IYLiquidAdapter.sol`: shared adapter execution + UI schema (`execute*`, `positionView`, `PositionOpened`, `PositionClosed`).
@@ -78,6 +79,7 @@ Current script supports market + optional:
 - `AaveGenericReceiver`
 - `WeETHUnwindAdapter`
 - `MorphoGenericReceiver`
+- `GenericCollateralAdapter`
 
 Current default constants in the script:
 - `SUSDE_ADDRESS = address(0)` (disabled by default).

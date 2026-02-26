@@ -150,7 +150,8 @@ contract YLiquidWstETHAaveAdapterForkTest is Test {
             WstETHAaveReceiver.OpenCallbackData({repayAmount: 0, withdrawAmount: LOCKED_WSTETH})
         );
 
-        uint256 tokenId = market.openPosition(PRINCIPAL_WETH, address(adapter), address(receiver), LOCKED_WSTETH, openData);
+        uint256 tokenId =
+            market.openPosition(PRINCIPAL_WETH, address(adapter), address(receiver), WSTETH, LOCKED_WSTETH, openData);
 
         assertTrue(receiver.sawOpenCallback(), "open callback missing");
         (AdapterProxy proxy, uint128 principal, uint128 locked, uint256 requestId, WstETHUnwindAdapter.Status status) =
@@ -190,7 +191,8 @@ contract YLiquidWstETHAaveAdapterForkTest is Test {
             WstETHAaveReceiver.OpenCallbackData({repayAmount: 0, withdrawAmount: LOCKED_WSTETH})
         );
 
-        uint256 tokenId = market.openPosition(PRINCIPAL_WETH, address(adapter), address(receiver), LOCKED_WSTETH, openData);
+        uint256 tokenId =
+            market.openPosition(PRINCIPAL_WETH, address(adapter), address(receiver), WSTETH, LOCKED_WSTETH, openData);
         (AdapterProxy proxy,,, uint256 requestId,) = adapter.positions(tokenId);
         vm.warp(block.timestamp + 11 days);
         uint256 claimedEth = IwstETH(WSTETH).getStETHByWstETH(LOCKED_WSTETH);   
@@ -215,7 +217,8 @@ contract YLiquidWstETHAaveAdapterForkTest is Test {
             WstETHAaveReceiver.OpenCallbackData({repayAmount: 0, withdrawAmount: LOCKED_WSTETH})
         );
 
-        uint256 tokenId = market.openPosition(PRINCIPAL_WETH, address(adapter), address(receiver), LOCKED_WSTETH, openData);
+        uint256 tokenId =
+            market.openPosition(PRINCIPAL_WETH, address(adapter), address(receiver), WSTETH, LOCKED_WSTETH, openData);
         (AdapterProxy proxy,,, uint256 requestId,) = adapter.positions(tokenId);
         vm.warp(block.timestamp + 11 days);
 
@@ -250,7 +253,8 @@ contract YLiquidWstETHAaveAdapterForkTest is Test {
             WstETHAaveReceiver.OpenCallbackData({repayAmount: 0, withdrawAmount: LOCKED_WSTETH})
         );
 
-        uint256 tokenId = market.openPosition(PRINCIPAL_WETH, address(adapter), address(receiver), LOCKED_WSTETH, openData);
+        uint256 tokenId =
+            market.openPosition(PRINCIPAL_WETH, address(adapter), address(receiver), WSTETH, LOCKED_WSTETH, openData);
         bytes memory settleData = abi.encode(bytes(""));
 
         vm.expectRevert();

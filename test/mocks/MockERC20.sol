@@ -18,6 +18,10 @@ contract MockERC20 is IERC20 {
         DECIMALS = decimals_;
     }
 
+    function decimals() external view returns (uint8) {
+        return DECIMALS;
+    }
+
     function mint(address to, uint256 amount) external {
         balanceOf[to] += amount;
         totalSupply += amount;

@@ -51,6 +51,7 @@ contract YLiquidMarket is BaseHealthCheck, ReentrancyGuard {
     mapping(address => bool) public allowedAdapters;
     mapping(address => uint32) public adapterRiskPremiumBps;
     mapping(uint256 => Position) public positions;
+    mapping(uint256 => address) public positionCollateralTokens;
 
     event IdleStrategyUpdated(address indexed strategy);
     event PauseUpdated(bool paused);
@@ -128,6 +129,7 @@ contract YLiquidMarket is BaseHealthCheck, ReentrancyGuard {
         uint256 principal,
         address adapter,
         address receiver,
+        address collateralToken,
         uint256 collateralAmount,
         bytes calldata callbackData
     )
@@ -138,8 +140,8 @@ contract YLiquidMarket is BaseHealthCheck, ReentrancyGuard {
     {
         require(allowedAdapters[adapter], "adapter blocked");
         require(principal > 0, "zero principal");
+        require(collateralToken != address(0), "zero collateral");
 
-        address resolvedReceiver = receiver == address(0) ? msg.sender : receiver;
         tokenId = POSITION_NFT.mint(msg.sender);
 
         totalPrincipalActive += principal;
@@ -147,7 +149,7 @@ contract YLiquidMarket is BaseHealthCheck, ReentrancyGuard {
         asset.safeTransfer(adapter, principal);
 
         uint64 expectedDurationSeconds = IYLiquidAdapter(adapter).executeOpen(
-            tokenId, msg.sender, address(asset), principal, resolvedReceiver, collateralAmount, callbackData
+            tokenId, msg.sender, principal, collateralToken, collateralAmount, receiver, callbackData
         );
         require(expectedDurationSeconds > 0, "zero duration");
         uint256 expectedEndTime = block.timestamp + expectedDurationSeconds;
@@ -162,6 +164,7 @@ contract YLiquidMarket is BaseHealthCheck, ReentrancyGuard {
             expectedEndTime: uint64(expectedEndTime),
             state: PositionState.Active
         });
+        positionCollateralTokens[tokenId] = collateralToken;
 
         emit PositionOpened(tokenId, adapter, msg.sender, principal, expectedDurationSeconds);
     }
@@ -193,11 +196,12 @@ contract YLiquidMarket is BaseHealthCheck, ReentrancyGuard {
         require(msg.sender == POSITION_NFT.ownerOf(tokenId), "not owner");
 
         amountOwed = quoteDebt(tokenId);
-        address resolvedReceiver = receiver == address(0) ? msg.sender : receiver;
+        address collateralToken = positionCollateralTokens[tokenId];
+        require(collateralToken != address(0), "zero collateral");
 
         uint256 balBefore = asset.balanceOf(address(this));
         IYLiquidAdapter(position.adapter).executeSettle(
-            tokenId, msg.sender, address(asset), amountOwed, resolvedReceiver, callbackData
+            tokenId, msg.sender, amountOwed, collateralToken, receiver, callbackData
         );
         uint256 balAfter = asset.balanceOf(address(this));
         uint256 repaid = balAfter - balBefore;
@@ -205,6 +209,7 @@ contract YLiquidMarket is BaseHealthCheck, ReentrancyGuard {
 
         position.state = PositionState.Closed;
         totalPrincipalActive -= position.principal;
+        delete positionCollateralTokens[tokenId];
         POSITION_NFT.burn(tokenId);
 
         _shiftMarketToIdle(repaid);
@@ -226,11 +231,12 @@ contract YLiquidMarket is BaseHealthCheck, ReentrancyGuard {
         require(block.timestamp >= forceCloseTime, "force close too early");
 
         uint256 amountOwed = quoteDebt(tokenId);
-        address resolvedReceiver = receiver == address(0) ? msg.sender : receiver;
+        address collateralToken = positionCollateralTokens[tokenId];
+        require(collateralToken != address(0), "zero collateral");
 
         uint256 balBefore = asset.balanceOf(address(this));
         IYLiquidAdapter(position.adapter).executeForceClose(
-            tokenId, POSITION_NFT.ownerOf(tokenId), address(asset), amountOwed, resolvedReceiver, callbackData
+            tokenId, POSITION_NFT.ownerOf(tokenId), amountOwed, collateralToken, receiver, callbackData
         );
         uint256 balAfter = asset.balanceOf(address(this));
         recovered = balAfter - balBefore;
@@ -243,6 +249,7 @@ contract YLiquidMarket is BaseHealthCheck, ReentrancyGuard {
 
         position.state = PositionState.Defaulted;
         totalPrincipalActive -= position.principal;
+        delete positionCollateralTokens[tokenId];
         POSITION_NFT.burn(tokenId);
 
         _shiftMarketToIdle(recovered - bounty);

@@ -5,6 +5,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import {IYLiquidAdapter, IYLiquidMarketPositionReader} from "../interfaces/IYLiquidAdapter.sol";
+import {IYLiquidActionAdapter} from "../interfaces/IYLiquidActionAdapter.sol";
 import {IYLiquidAdapterCallbackReceiver} from "../interfaces/IYLiquidAdapterCallbackReceiver.sol";
 import {IsUSDe} from "../interfaces/IsUSDe.sol";
 import {AdapterProxy} from "./AdapterProxy.sol";
@@ -87,10 +88,10 @@ contract SUSDeAdapter is IYLiquidAdapter, ReentrancyGuard {
     function executeOpen(
         uint256 tokenId,
         address owner,
-        address,
         uint256 amount,
-        address receiver,
+        address collateralToken,
         uint256 collateralAmount,
+        address receiver,
         bytes calldata callbackData
     )
         external
@@ -101,6 +102,7 @@ contract SUSDeAdapter is IYLiquidAdapter, ReentrancyGuard {
         require(amount > 0, "zero amount");
         require(receiver != address(0), "zero receiver");
         require(collateralAmount > 0, "zero amount");
+        require(collateralToken == address(SUSDE), "bad collateral");
 
         uint256 usdeExpected = SUSDE.previewRedeem(collateralAmount);
         require(usdeExpected >= amount * USDE_PRECISION * minRateWad / WAD, "min rate not met");
@@ -119,9 +121,9 @@ contract SUSDeAdapter is IYLiquidAdapter, ReentrancyGuard {
 
         SUSDE.safeTransferFrom(receiver, address(proxy), collateralAmount);
 
-        AdapterProxy.Call[] memory calls = new AdapterProxy.Call[](1);
+        IYLiquidActionAdapter.ActionCall[] memory calls = new IYLiquidActionAdapter.ActionCall[](1);
 
-        calls[0] = AdapterProxy.Call({
+        calls[0] = IYLiquidActionAdapter.ActionCall({
             target: address(SUSDE),
             value: 0,
             data: abi.encodeCall(IsUSDe.cooldownShares, collateralAmount)
@@ -146,8 +148,8 @@ contract SUSDeAdapter is IYLiquidAdapter, ReentrancyGuard {
     function executeSettle(
         uint256 tokenId,
         address owner,
-        address,
         uint256 amountOwed,
+        address collateralToken,
         address receiver,
         bytes calldata callbackData
     )
@@ -159,6 +161,7 @@ contract SUSDeAdapter is IYLiquidAdapter, ReentrancyGuard {
         CooldownPosition memory position = positions[tokenId];
         require(position.status == Status.Open, "unknown position");
         require(receiver != address(0), "zero receiver");
+        require(collateralToken == address(SUSDE), "bad collateral");
 
         uint256 usdeReceived = _unstakeUSDe(position.proxy);
 
@@ -177,8 +180,8 @@ contract SUSDeAdapter is IYLiquidAdapter, ReentrancyGuard {
     function executeForceClose(
         uint256 tokenId,
         address owner,
-        address,
         uint256 amountOwed,
+        address collateralToken,
         address receiver,
         bytes calldata callbackData
     )
@@ -190,6 +193,7 @@ contract SUSDeAdapter is IYLiquidAdapter, ReentrancyGuard {
         CooldownPosition memory position = positions[tokenId];
         require(position.status == Status.Open, "unknown position");
         require(receiver != address(0), "zero receiver");
+        require(collateralToken == address(SUSDE), "bad collateral");
 
         uint256 usdeReceived = _unstakeUSDe(position.proxy);
         USDE.safeTransfer(receiver, usdeReceived);
@@ -238,8 +242,8 @@ contract SUSDeAdapter is IYLiquidAdapter, ReentrancyGuard {
 
     function _unstakeUSDe(AdapterProxy proxy) internal returns (uint256 usdeReceived) {
         uint256 usdeBefore = USDE.balanceOf(address(this));
-        AdapterProxy.Call[] memory calls = new AdapterProxy.Call[](1);
-        calls[0] = AdapterProxy.Call({
+        IYLiquidActionAdapter.ActionCall[] memory calls = new IYLiquidActionAdapter.ActionCall[](1);
+        calls[0] = IYLiquidActionAdapter.ActionCall({
             target: address(SUSDE),
             value: 0,
             data: abi.encodeCall(IsUSDe.unstake, (address(this)))

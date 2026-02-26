@@ -101,7 +101,14 @@ contract AaveGenericReceiverWstETHForkTest is Test {
 
         uint256 tokenId;
         vm.prank(OWNER);
-        tokenId = market.openPosition(PRINCIPAL_WETH, address(adapter), address(receiver), LOCKED_WSTETH, callbackData);
+        tokenId = market.openPosition(
+            PRINCIPAL_WETH,
+            address(adapter),
+            address(receiver),
+            WSTETH,
+            LOCKED_WSTETH,
+            callbackData
+        );
 
         uint256 ownerATokenAfter = IERC20(aWstETH).balanceOf(OWNER);
         uint256 ownerDebtBaseAfterOpen = _ownerDebtBase();

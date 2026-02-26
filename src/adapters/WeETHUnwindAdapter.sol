@@ -5,6 +5,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import {IYLiquidAdapter, IYLiquidMarketPositionReader} from "../interfaces/IYLiquidAdapter.sol";
+import {IYLiquidActionAdapter} from "../interfaces/IYLiquidActionAdapter.sol";
 import {AdapterProxy} from "./AdapterProxy.sol";
 import {IWETH9} from "../interfaces/IWETH9.sol";
 import {IYLiquidAdapterCallbackReceiver} from "../interfaces/IYLiquidAdapterCallbackReceiver.sol";
@@ -88,10 +89,10 @@ contract WeETHUnwindAdapter is IYLiquidAdapter, ReentrancyGuard {
     function executeOpen(
         uint256 tokenId,
         address owner,
-        address asset,
         uint256 amount,
-        address receiver,
+        address collateralToken,
         uint256 collateralAmount,
+        address receiver,
         bytes calldata callbackData
     )
         external
@@ -99,7 +100,7 @@ contract WeETHUnwindAdapter is IYLiquidAdapter, ReentrancyGuard {
         nonReentrant
         returns (uint64 expectedDurationSeconds)
     {
-        require(asset == address(WETH), "bad asset");
+        require(collateralToken == address(WEETH), "bad collateral");
         require(receiver != address(0), "zero receiver");
         require(amount > 0 && collateralAmount > 0, "zero amount");
 
@@ -138,8 +139,8 @@ contract WeETHUnwindAdapter is IYLiquidAdapter, ReentrancyGuard {
     function executeSettle(
         uint256 tokenId,
         address owner,
-        address asset,
         uint256 amountOwed,
+        address collateralToken,
         address,
         bytes calldata
     )
@@ -148,7 +149,7 @@ contract WeETHUnwindAdapter is IYLiquidAdapter, ReentrancyGuard {
         nonReentrant
         returns (uint256 amountRepaid)
     {
-        require(asset == address(WETH), "bad asset");
+        require(collateralToken == address(WEETH), "bad collateral");
 
         Position memory position = positions[tokenId];
         require(position.status == Status.Open, "unknown position");
@@ -162,8 +163,8 @@ contract WeETHUnwindAdapter is IYLiquidAdapter, ReentrancyGuard {
     function executeForceClose(
         uint256 tokenId,
         address owner,
-        address asset,
         uint256 amountOwed,
+        address collateralToken,
         address,
         bytes calldata
     )
@@ -172,7 +173,7 @@ contract WeETHUnwindAdapter is IYLiquidAdapter, ReentrancyGuard {
         nonReentrant
         returns (uint256 amountRecovered)
     {
-        require(asset == address(WETH), "bad asset");
+        require(collateralToken == address(WEETH), "bad collateral");
 
         Position memory position = positions[tokenId];
         require(position.status == Status.Open, "unknown position");
@@ -201,21 +202,21 @@ contract WeETHUnwindAdapter is IYLiquidAdapter, ReentrancyGuard {
     }
 
     function _withdrawEEth(AdapterProxy proxy, uint256 collateralAmount) internal returns (uint256 requestId) {
-        AdapterProxy.Call[] memory unwrapCalls = new AdapterProxy.Call[](1);
+        IYLiquidActionAdapter.ActionCall[] memory unwrapCalls = new IYLiquidActionAdapter.ActionCall[](1);
         unwrapCalls[0] =
-            AdapterProxy.Call({target: address(WEETH), value: 0, data: abi.encodeCall(IWeETH.unwrap, collateralAmount)});
+            IYLiquidActionAdapter.ActionCall({target: address(WEETH), value: 0, data: abi.encodeCall(IWeETH.unwrap, collateralAmount)});
         proxy.execute(unwrapCalls);
 
         uint256 eEthAmount = EETH.balanceOf(address(proxy));
         require(eEthAmount > 0, "zero eeth");
 
-        AdapterProxy.Call[] memory withdrawCalls = new AdapterProxy.Call[](2);
-        withdrawCalls[0] = AdapterProxy.Call({
+        IYLiquidActionAdapter.ActionCall[] memory withdrawCalls = new IYLiquidActionAdapter.ActionCall[](2);
+        withdrawCalls[0] = IYLiquidActionAdapter.ActionCall({
             target: address(EETH),
             value: 0,
             data: abi.encodeCall(IERC20.approve, (address(LIQUIDITY_POOL), eEthAmount))
         });
-        withdrawCalls[1] = AdapterProxy.Call({
+        withdrawCalls[1] = IYLiquidActionAdapter.ActionCall({
             target: address(LIQUIDITY_POOL),
             value: 0,
             data: abi.encodeCall(IEtherFiLiquidityPool.requestWithdraw, (address(proxy), eEthAmount))
@@ -226,8 +227,8 @@ contract WeETHUnwindAdapter is IYLiquidAdapter, ReentrancyGuard {
     }
 
     function _claimWithdrawal(AdapterProxy proxy, uint256 requestId) internal returns (uint256 claimedEth) {
-        AdapterProxy.Call[] memory calls = new AdapterProxy.Call[](1);
-        calls[0] = AdapterProxy.Call({
+        IYLiquidActionAdapter.ActionCall[] memory calls = new IYLiquidActionAdapter.ActionCall[](1);
+        calls[0] = IYLiquidActionAdapter.ActionCall({
             target: address(WITHDRAW_REQUEST_NFT),
             value: 0,
             data: abi.encodeCall(IEtherFiWithdrawRequestNFT.claimWithdraw, (requestId))
@@ -246,20 +247,20 @@ contract WeETHUnwindAdapter is IYLiquidAdapter, ReentrancyGuard {
         uint256 surplus = claimedEth - paidToMarket;
 
         uint256 callCount = surplus > 0 ? 3 : 2;
-        AdapterProxy.Call[] memory calls = new AdapterProxy.Call[](callCount);
-        calls[0] = AdapterProxy.Call({
+        IYLiquidActionAdapter.ActionCall[] memory calls = new IYLiquidActionAdapter.ActionCall[](callCount);
+        calls[0] = IYLiquidActionAdapter.ActionCall({
             target: address(WETH),
             value: claimedEth,
             data: abi.encodeCall(IWETH9.deposit, ())
         });
-        calls[1] = AdapterProxy.Call({
+        calls[1] = IYLiquidActionAdapter.ActionCall({
             target: address(WETH),
             value: 0,
             data: abi.encodeCall(IERC20.transfer, (address(MARKET), paidToMarket))
         });
 
         if (surplus > 0) {
-            calls[2] = AdapterProxy.Call({
+            calls[2] = IYLiquidActionAdapter.ActionCall({
                 target: address(WETH),
                 value: 0,
                 data: abi.encodeCall(IERC20.transfer, (receiver, surplus))

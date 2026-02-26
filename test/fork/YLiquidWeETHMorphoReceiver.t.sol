@@ -96,7 +96,14 @@ contract YLiquidWeETHMorphoReceiverForkTest is Test {
 
         uint256 tokenId;
         vm.prank(OWNER);
-        tokenId = market.openPosition(PRINCIPAL_WETH, address(adapter), address(receiver), LOCKED_WEETH, callbackData);
+        tokenId = market.openPosition(
+            PRINCIPAL_WETH,
+            address(adapter),
+            address(receiver),
+            WEETH,
+            LOCKED_WEETH,
+            callbackData
+        );
 
         IMorpho.Position memory ownerPositionAfter = morpho.position(MORPHO_MARKET_ID, OWNER);
         assertLt(ownerPositionAfter.borrowShares, ownerPositionBefore.borrowShares, "owner debt not reduced");
@@ -134,7 +141,14 @@ contract YLiquidWeETHMorphoReceiverForkTest is Test {
 
         vm.expectRevert("not authorized by owner");
         vm.prank(OWNER);
-        market.openPosition(PRINCIPAL_WETH, address(adapter), address(receiver), LOCKED_WEETH, callbackData);
+        market.openPosition(
+            PRINCIPAL_WETH,
+            address(adapter),
+            address(receiver),
+            WEETH,
+            LOCKED_WEETH,
+            callbackData
+        );
     }
 
     function _configureVault() internal {

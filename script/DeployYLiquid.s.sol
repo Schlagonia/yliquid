@@ -11,6 +11,7 @@ import {YLiquidMarket} from "../src/YLiquidMarket.sol";
 import {SUSDeAdapter} from "../src/adapters/SUSDeAdapter.sol";
 import {WstETHUnwindAdapter} from "../src/adapters/WstETHUnwindAdapter.sol";
 import {WeETHUnwindAdapter} from "../src/adapters/WeETHUnwindAdapter.sol";
+import {GenericCollateralAdapter} from "../src/adapters/GenericCollateralAdapter.sol";
 import {AaveGenericReceiver} from "../src/receivers/AaveGenericReceiver.sol";
 import {MorphoGenericReceiver} from "../src/receivers/MorphoGenericReceiver.sol";
 import {YLiquidMarketAprOracle} from "../src/oracles/YLiquidMarketAprOracle.sol";
@@ -62,6 +63,11 @@ contract DeployYLiquid is Script {
     // Optional Morpho generic receiver (requires WEETH_ADDRESS != 0)
     address internal constant MORPHO = 0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb;
 
+    // Optional generic collateral adapter
+    bool internal constant DEPLOY_GENERIC_COLLATERAL_ADAPTER = false;
+    uint64 internal constant GENERIC_MAX_DURATION_SECONDS = 7 days; // 0 = adapter default
+    uint32 internal constant GENERIC_RISK_PREMIUM_BPS = 0;
+
     // Optional market APR oracle (set false to skip)
     bool internal constant DEPLOY_MARKET_APR_ORACLE = true;
 
@@ -76,6 +82,7 @@ contract DeployYLiquid is Script {
         address aaveReceiver;
         address weEthAdapter;
         address morphoReceiver;
+        address genericCollateralAdapter;
         address marketAprOracle;
     }
 
@@ -146,6 +153,17 @@ contract DeployYLiquid is Script {
             result.morphoReceiver = address(new MorphoGenericReceiver(MORPHO, address(market)));
         }
 
+        if (DEPLOY_GENERIC_COLLATERAL_ADAPTER) {
+            GenericCollateralAdapter genericAdapter =
+                new GenericCollateralAdapter(address(market), MARKET_ASSET);
+            if (GENERIC_MAX_DURATION_SECONDS > 0) {
+                genericAdapter.setMaxDurationSeconds(GENERIC_MAX_DURATION_SECONDS);
+            }
+            market.setAdapterAllowed(address(genericAdapter), true);
+            market.setAdapterRiskPremium(address(genericAdapter), GENERIC_RISK_PREMIUM_BPS);
+            result.genericCollateralAdapter = address(genericAdapter);
+        }
+
         if (DEPLOY_MARKET_APR_ORACLE) {
             result.marketAprOracle = address(new YLiquidMarketAprOracle());
         }
@@ -158,6 +176,7 @@ contract DeployYLiquid is Script {
         console2.log("aaveReceiver:", result.aaveReceiver);
         console2.log("weEthAdapter:", result.weEthAdapter);
         console2.log("morphoReceiver:", result.morphoReceiver);
+        console2.log("genericCollateralAdapter:", result.genericCollateralAdapter);
         console2.log("marketAprOracle:", result.marketAprOracle);
     }
 

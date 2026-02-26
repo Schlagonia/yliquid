@@ -60,10 +60,10 @@ interface IYLiquidAdapter {
     function executeOpen(
         uint256 tokenId,
         address owner,
-        address asset,
         uint256 amount,
-        address receiver,
+        address collateralToken,
         uint256 collateralAmount,
+        address receiver,
         bytes calldata callbackData
     )
         external
@@ -72,8 +72,8 @@ interface IYLiquidAdapter {
     function executeSettle(
         uint256 tokenId,
         address owner,
-        address asset,
         uint256 amountOwed,
+        address collateralToken,
         address receiver,
         bytes calldata callbackData
     )
@@ -83,8 +83,8 @@ interface IYLiquidAdapter {
     function executeForceClose(
         uint256 tokenId,
         address owner,
-        address asset,
         uint256 amountOwed,
+        address collateralToken,
         address receiver,
         bytes calldata callbackData
     )
